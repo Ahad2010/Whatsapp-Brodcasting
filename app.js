@@ -212,6 +212,39 @@ function enterApp() {
   $("#user-avatar").textContent = initials(currentUser.name);
   navigateTo("dashboard");
   refreshIcons();
+  checkBackend();
+  // Re-check periodically so the badge reflects the backend going up/down.
+  if (backendInterval) clearInterval(backendInterval);
+  backendInterval = setInterval(checkBackend, 15000);
+}
+
+/* ---- Backend connection status ---- */
+let backendOnline = false;
+let backendInterval = null;
+
+async function checkBackend(announce = false) {
+  const dot = $("#backend-dot"), label = $("#backend-label"), pill = $("#backend-status");
+  if (!pill) return;
+  const base = "hidden sm:flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition";
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(`${API_BASE}/`, { cache: "no-store", signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error("bad status");
+    const data = await res.json();
+    backendOnline = true;
+    dot.className = "h-2 w-2 rounded-full bg-wa-green animate-pulse";
+    pill.className = base + " bg-wa-green/10 text-wa-green";
+    label.textContent = `API connected · ${data.mode}`;
+    if (announce) toast(`Backend connected at ${API_BASE} (${data.mode} mode).`);
+  } catch {
+    backendOnline = false;
+    dot.className = "h-2 w-2 rounded-full bg-amber-500";
+    pill.className = base + " bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400";
+    label.textContent = "API offline · local mock";
+    if (announce) toast(`Backend not reachable at ${API_BASE}. Using local mock. Start it with: uvicorn main:app --reload`, "error");
+  }
 }
 
 function setupLogout() {
@@ -447,11 +480,8 @@ function filteredContacts() {
   });
 }
 
-function renderContacts() {
-  const list = filteredContacts();
-  const groupOptions = ['<option value="all">All groups</option>', ...groups.map(g => `<option value="${g.name}">${g.name}</option>`)].join("");
-
-  const rows = list.map(c => `
+function contactRowHtml(c) {
+  return `
     <tr class="data-row border-t border-gray-50 dark:border-gray-800">
       <td class="py-3 px-4"><input type="checkbox" class="row-check accent-wa-green h-4 w-4 rounded" data-id="${c.id}" ${selectedContactIds.has(c.id) ? "checked" : ""}></td>
       <td class="py-3 px-4">
@@ -464,7 +494,18 @@ function renderContacts() {
       <td class="py-3 px-4 hidden sm:table-cell"><span class="badge bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">${c.group}</span></td>
       <td class="py-3 px-4 text-sm text-gray-500 hidden md:table-cell">${c.added}</td>
       <td class="py-3 px-4"><div class="flex flex-wrap items-center gap-1.5">${contactStatusBadge(c.status)}${readyChip(c)}</div></td>
-    </tr>`).join("");
+    </tr>`;
+}
+
+function contactsTbodyHtml() {
+  const list = filteredContacts();
+  return list.length
+    ? list.map(contactRowHtml).join("")
+    : `<tr><td colspan="6" class="py-12 text-center text-gray-400">No contacts match your filter.</td></tr>`;
+}
+
+function renderContacts() {
+  const groupOptions = ['<option value="all">All groups</option>', ...groups.map(g => `<option value="${g.name}">${g.name}</option>`)].join("");
 
   $("#page-content").innerHTML = `
     <div class="max-w-7xl mx-auto space-y-6">
@@ -505,38 +546,51 @@ function renderContacts() {
                 <th class="py-2.5 px-4 font-medium">Status</th>
               </tr>
             </thead>
-            <tbody id="contacts-tbody">${rows || `<tr><td colspan="6" class="py-12 text-center text-gray-400">No contacts match your filter.</td></tr>`}</tbody>
+            <tbody id="contacts-tbody">${contactsTbodyHtml()}</tbody>
           </table>
         </div>
       </div>
     </div>`;
 
-  // wire up
-  $("#contact-search").addEventListener("input", e => { contactFilter.search = e.target.value; rerenderContactRows(); });
-  $("#contact-group-filter").value = contactFilter.group;
-  $("#contact-group-filter").addEventListener("change", e => { contactFilter.group = e.target.value; rerenderContactRows(); });
-  wireContactChecks();
+  // Wire controls once per full render. Search/filter update ONLY the table body
+  // so the search input keeps focus while typing.
+  $("#contact-search").addEventListener("input", e => { contactFilter.search = e.target.value; updateContactsTable(); });
+  const gf = $("#contact-group-filter");
+  gf.value = contactFilter.group;
+  gf.addEventListener("change", e => { contactFilter.group = e.target.value; updateContactsTable(); });
+  $("#select-all").addEventListener("change", e => {
+    filteredContacts().forEach(c => e.target.checked ? selectedContactIds.add(c.id) : selectedContactIds.delete(c.id));
+    updateContactsTable();
+  });
+  wireRowChecks();
+  syncSelectAll();
 }
 
-function rerenderContactRows() {
-  renderContacts();
+// Re-render only the rows (keeps search input + its focus intact).
+function updateContactsTable() {
+  const tbody = $("#contacts-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = contactsTbodyHtml();
   refreshIcons();
+  wireRowChecks();
+  syncSelectAll();
+  updateBulkBar();
 }
 
-function wireContactChecks() {
+function wireRowChecks() {
   $$(".row-check").forEach(cb => cb.addEventListener("change", e => {
     const id = +e.target.dataset.id;
     e.target.checked ? selectedContactIds.add(id) : selectedContactIds.delete(id);
     updateBulkBar();
+    syncSelectAll();
   }));
+}
+
+function syncSelectAll() {
   const selectAll = $("#select-all");
-  if (selectAll) {
-    selectAll.checked = filteredContacts().every(c => selectedContactIds.has(c.id)) && filteredContacts().length > 0;
-    selectAll.addEventListener("change", e => {
-      filteredContacts().forEach(c => e.target.checked ? selectedContactIds.add(c.id) : selectedContactIds.delete(c.id));
-      rerenderContactRows();
-    });
-  }
+  if (!selectAll) return;
+  const list = filteredContacts();
+  selectAll.checked = list.length > 0 && list.every(c => selectedContactIds.has(c.id));
 }
 
 function updateBulkBar() {
@@ -882,6 +936,7 @@ function viewGroupMembers(id) {
 
 function composeToGroup(id) {
   composeSelectedGroups = new Set([id]);
+  composeMode = "groups";
   navigateTo("compose");
 }
 
@@ -1180,7 +1235,12 @@ async function runBroadcast(message, count) {
     </div>`, "max-w-sm");
   refreshIcons();
 
-  const result = await sendBroadcast(message, [...composeSelectedGroups], [...composeSelectedContacts], [...composePastedNumbers], category, (done) => {
+  // Send only the recipients from the active tab, so the send matches the counter.
+  const gIds  = composeMode === "groups"   ? [...composeSelectedGroups]  : [];
+  const cIds  = composeMode === "contacts" ? [...composeSelectedContacts] : [];
+  const pNums = composeMode === "numbers"  ? [...composePastedNumbers]    : [];
+
+  const result = await sendBroadcast(message, gIds, cIds, pNums, category, (done) => {
     const pct = Math.round((done / count) * 100);
     const bar = $("#prog-bar"), pc = $("#prog-count");
     if (bar) bar.style.width = pct + "%";
@@ -1500,6 +1560,22 @@ function renderSettings() {
         <p class="text-gray-500 dark:text-gray-400 text-sm mt-0.5">Manage your account, team and WhatsApp connection.</p>
       </div>
 
+      <!-- Backend / API connection -->
+      <div class="card p-6">
+        <h3 class="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="server" class="h-5 w-5 text-wa-green"></i> Backend API Connection</h3>
+        <div class="flex items-center justify-between p-4 rounded-xl border ${backendOnline ? 'bg-wa-green/5 border-wa-green/20' : 'bg-amber-50 dark:bg-amber-500/5 border-amber-200 dark:border-amber-500/20'}">
+          <div class="flex items-center gap-3">
+            <span class="h-2.5 w-2.5 rounded-full ${backendOnline ? 'bg-wa-green animate-pulse' : 'bg-amber-500'}"></span>
+            <div>
+              <div class="text-sm font-semibold text-gray-900 dark:text-white">${backendOnline ? 'Connected' : 'Not connected (using local mock)'}</div>
+              <div class="text-xs text-gray-400 font-mono">${API_BASE}</div>
+            </div>
+          </div>
+          <button class="btn-secondary py-2" onclick="checkBackend(true)"><i data-lucide="refresh-cw" class="h-4 w-4"></i> Test connection</button>
+        </div>
+        <p class="text-xs text-gray-400 mt-3">Start the backend with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">uvicorn main:app --reload</code> inside the <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">backend/</code> folder. If it's offline, broadcasts fall back to a local mock automatically.</p>
+      </div>
+
       <!-- Connection -->
       <div class="card p-6">
         <h3 class="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="message-circle" class="h-5 w-5 text-wa-green"></i> WhatsApp Business Connection</h3>
@@ -1597,6 +1673,7 @@ document.addEventListener("DOMContentLoaded", () => {
   setupLogout();
   setupNav();
   setupTheme();
+  $("#backend-status").addEventListener("click", () => checkBackend(true));
   refreshIcons();
 });
 
@@ -1618,4 +1695,5 @@ window.openTemplateModal = openTemplateModal;
 window.deleteTemplate = deleteTemplate;
 window.useTemplate = useTemplate;
 window.savePricing = savePricing;
+window.checkBackend = checkBackend;
 window.toast = toast;

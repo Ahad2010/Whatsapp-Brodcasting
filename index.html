@@ -188,9 +188,10 @@
             <h1 id="page-title" class="text-lg font-semibold text-gray-900 dark:text-white">Dashboard</h1>
           </div>
           <div class="flex items-center gap-2 sm:gap-3">
-            <div class="hidden sm:flex items-center gap-1.5 text-xs font-medium text-wa-green bg-wa-green/10 px-3 py-1.5 rounded-full">
-              <span class="h-2 w-2 rounded-full bg-wa-green animate-pulse"></span> Connected
-            </div>
+            <button id="backend-status" title="Click to re-check backend connection" class="hidden sm:flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 transition">
+              <span id="backend-dot" class="h-2 w-2 rounded-full bg-gray-400"></span>
+              <span id="backend-label">Checking API…</span>
+            </button>
             <button id="theme-toggle" class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800" title="Toggle theme">
               <i data-lucide="moon" class="h-5 w-5 hidden dark:block"></i>
               <i data-lucide="sun" class="h-5 w-5 block dark:hidden"></i>
