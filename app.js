@@ -201,6 +201,23 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal()
 
 let authMode = "signin"; // or "signup"
 
+// Quick probe so auth can decide DB vs. local without touching the status pill.
+async function isBackendReachable() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(`${API_BASE}/`, { cache: "no-store", signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch { return false; }
+}
+
+// FastAPI returns errors as {"detail": "..."} — pull that out for the toast.
+function cleanAuthError(msg = "") {
+  try { const d = JSON.parse(msg).detail; if (d) return d; } catch {}
+  return msg || "Something went wrong. Please try again.";
+}
+
 function setupAuth() {
   const form = $("#auth-form");
   const switchBtn = $("#auth-switch-btn");
@@ -217,7 +234,7 @@ function setupAuth() {
     refreshIcons();
   });
 
-  form.addEventListener("submit", e => {
+  form.addEventListener("submit", async e => {
     e.preventDefault();
     const email = $("#auth-email").value.trim();
     const pass = $("#auth-password").value;
@@ -230,21 +247,45 @@ function setupAuth() {
     if (!passValid) ok = false;
     if (!ok) return;
 
-    if (authMode === "signup") {
-      const name = $("#auth-name").value.trim() || "New User";
-      saveAccount({ name, email, password: pass });
-      currentUser = { name, email };
-      toast("Account created — you're all set!");
-      enterApp();
-    } else {
-      // Sign in: only the account created via Sign up can log in.
-      const acc = getAccount();
-      if (!acc) { toast("No account yet. Please sign up first.", "error"); return; }
-      if (acc.email.toLowerCase() !== email.toLowerCase() || acc.password !== pass) {
-        toast("Incorrect email or password.", "error"); return;
+    const submitBtn = form.querySelector('[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const online = await isBackendReachable();
+
+      if (authMode === "signup") {
+        const name = $("#auth-name").value.trim() || "New User";
+        if (online) {
+          // Save the account in MongoDB via the backend.
+          const user = await api.post("/api/auth/signup", { name, email, password: pass });
+          currentUser = { name: user.name, email: user.email };
+          toast("Account created — saved to the database!");
+        } else {
+          // Backend offline: keep the old local-only behaviour as a fallback.
+          saveAccount({ name, email, password: pass });
+          currentUser = { name, email };
+          toast("Account created locally (backend offline).", "info");
+        }
+        await enterApp();
+      } else {
+        // Sign in — only an account that exists in the database can log in.
+        if (online) {
+          const user = await api.post("/api/auth/login", { email, password: pass });
+          currentUser = { name: user.name, email: user.email };
+          await enterApp();
+        } else {
+          const acc = getAccount();
+          if (!acc) { toast("No account yet. Please sign up first.", "error"); return; }
+          if (acc.email.toLowerCase() !== email.toLowerCase() || acc.password !== pass) {
+            toast("Incorrect email or password.", "error"); return;
+          }
+          currentUser = { name: acc.name, email: acc.email };
+          await enterApp();
+        }
       }
-      currentUser = { name: acc.name, email: acc.email };
-      enterApp();
+    } catch (err) {
+      toast(cleanAuthError(err.message), "error");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
   });
 
