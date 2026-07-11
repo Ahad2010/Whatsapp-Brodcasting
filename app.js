@@ -72,6 +72,35 @@ function fmtMoney(amount) {
   return pricing.symbol + Number(amount).toFixed(2);
 }
 
+/* ---- Persistence: save app data to localStorage so it survives a refresh.
+   (The backend SQLite DB is the production store; this keeps the frontend-only
+   demo stateful even when the backend isn't running.) ---- */
+const STORAGE_KEY = "wablast_state_v1";
+
+function persist() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ contacts, groups, campaigns, templates, pricing }));
+  } catch (e) { /* storage unavailable (private mode / restricted) — stay in-memory */ }
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (Array.isArray(s.contacts))  contacts  = s.contacts;
+    if (Array.isArray(s.groups))    groups    = s.groups;
+    if (Array.isArray(s.campaigns)) campaigns = s.campaigns;
+    if (Array.isArray(s.templates)) templates = s.templates;
+    if (s.pricing && s.pricing.rates) pricing = s.pricing;
+  } catch (e) { /* corrupt data — ignore and keep seed defaults */ }
+}
+
+function resetData() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  location.reload();
+}
+
 /* Compose page working state */
 let composeSelectedGroups = new Set();
 let composeCategory = "Marketing";
@@ -641,6 +670,7 @@ function openAddContactModal() {
     const id = Math.max(0, ...contacts.map(c => c.id)) + 1;
     contacts.push({ id, name, phone, group: groupName, added: "2026-07-11", status: "active" });
     const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
+    persist();
     closeModal();
     renderContacts(); refreshIcons();
     toast(`${escapeHtml(name)} added to ${groupName} — ready for broadcast.`);
@@ -671,6 +701,7 @@ function openAddToGroupModal() {
       if (g && !g.memberIds.includes(id)) { g.memberIds.push(id); count++; }
     });
     selectedContactIds.clear();
+    persist();
     closeModal();
     renderContacts(); refreshIcons();
     toast(`${count} contacts added to ${g.name}.`);
@@ -762,6 +793,7 @@ function showImportPreview(rows) {
       contacts.push({ id, name: r.name, phone, group: groupName, added: "2026-07-11", status: "active" });
       const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
     });
+    persist();
     closeModal();
     renderContacts(); refreshIcons();
     toast(`Imported ${rows.length} contacts — all ready for broadcast.`);
@@ -887,6 +919,7 @@ function openCreateGroupModal() {
     const palette = ["#25D366","#3b82f6","#a855f7","#f59e0b","#ef4444","#14b8a6"];
     const id = Math.max(0, ...groups.map(g => g.id)) + 1;
     groups.push({ id, name, desc: $("#cg-desc").value.trim() || "Custom group", memberIds, color: palette[id % palette.length] });
+    persist();
     closeModal();
     renderGroups(); refreshIcons();
     toast(`Group "${escapeHtml(name)}" created with ${memberIds.length} members.`);
@@ -909,6 +942,7 @@ function deleteGroup(id) {
     </div>`, "max-w-sm");
   $("#del-confirm").addEventListener("click", () => {
     groups = groups.filter(x => x.id !== id);
+    persist();
     closeModal(); renderGroups(); refreshIcons();
     toast(`Group "${escapeHtml(g.name)}" deleted.`, "info");
   });
@@ -1023,10 +1057,10 @@ function renderCompose() {
               <div class="border border-gray-100 dark:border-gray-800 rounded-xl max-h-64 overflow-y-auto p-1">${contactChecklist}</div>
             </div>
             <div id="recipient-numbers" class="${composeMode==='numbers' ? '' : 'hidden'}">
-              <textarea id="compose-numbers" rows="6" class="input-field resize-none font-mono text-sm" placeholder="Paste phone numbers with country code — one per line or comma-separated.&#10;923001234567&#10;923019876543&#10;923022223344"></textarea>
+              <textarea id="compose-numbers" rows="6" class="input-field resize-none font-mono text-sm" placeholder="Paste phone numbers with country code — one per line or comma-separated.&#10;923001234567&#10;923019876543&#10;923022223344">${composePastedNumbers.join("\n")}</textarea>
               <div class="flex items-center justify-between mt-2">
                 <p class="text-xs text-gray-400 flex items-center gap-1"><i data-lucide="info" class="h-3.5 w-3.5"></i> No names or contacts needed — messages go straight to these numbers.</p>
-                <span class="text-xs whitespace-nowrap"><span id="numbers-valid" class="font-bold text-wa-green">0</span> valid numbers</span>
+                <span class="text-xs whitespace-nowrap"><span id="numbers-valid" class="font-bold text-wa-green">${composePastedNumbers.length}</span> valid numbers</span>
               </div>
             </div>
           </div>
@@ -1669,6 +1703,7 @@ function savePricing() {
    ======================================================================== */
 
 document.addEventListener("DOMContentLoaded", () => {
+  loadState();
   setupAuth();
   setupLogout();
   setupNav();
