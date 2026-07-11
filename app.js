@@ -393,10 +393,19 @@ function renderDashboard() {
 let contactFilter = { search: "", group: "all" };
 let selectedContactIds = new Set();
 
+const TODAY = "2026-07-11";
+
 function contactStatusBadge(status) {
   return status === "active"
     ? `<span class="badge bg-wa-green/10 text-wa-green"><i data-lucide="check" class="h-3 w-3"></i>Active</span>`
     : `<span class="badge bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"><i data-lucide="ban" class="h-3 w-3"></i>Opted-out</span>`;
+}
+
+// Green chip confirming a just-added contact is instantly eligible for the next auto-send
+function readyChip(c) {
+  return (c.status === "active" && c.added === TODAY)
+    ? `<span class="badge bg-wa-green/10 text-wa-green"><i data-lucide="check-circle" class="h-3 w-3"></i>Ready for broadcast</span>`
+    : "";
 }
 
 function filteredContacts() {
@@ -425,7 +434,7 @@ function renderContacts() {
       <td class="py-3 px-4 text-sm text-gray-500 font-mono">+${c.phone}</td>
       <td class="py-3 px-4 hidden sm:table-cell"><span class="badge bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">${c.group}</span></td>
       <td class="py-3 px-4 text-sm text-gray-500 hidden md:table-cell">${c.added}</td>
-      <td class="py-3 px-4">${contactStatusBadge(c.status)}</td>
+      <td class="py-3 px-4"><div class="flex flex-wrap items-center gap-1.5">${contactStatusBadge(c.status)}${readyChip(c)}</div></td>
     </tr>`).join("");
 
   $("#page-content").innerHTML = `
@@ -551,7 +560,7 @@ function openAddContactModal() {
     const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
     closeModal();
     renderContacts(); refreshIcons();
-    toast(`${escapeHtml(name)} added to ${groupName}.`);
+    toast(`${escapeHtml(name)} added to ${groupName} — ready for broadcast.`);
   });
 }
 
@@ -672,7 +681,7 @@ function showImportPreview(rows) {
     });
     closeModal();
     renderContacts(); refreshIcons();
-    toast(`Imported ${rows.length} contacts successfully.`);
+    toast(`Imported ${rows.length} contacts — all ready for broadcast.`);
   });
 }
 
@@ -910,6 +919,10 @@ function renderCompose() {
                 <button class="btn-secondary py-1.5 text-xs" onclick="toast('Attachment upload is UI-only in this demo.', 'info')"><i data-lucide="paperclip" class="h-4 w-4"></i> Document</button>
               </div>
               <span id="char-count" class="text-xs text-gray-400">0 characters</span>
+            </div>
+            <div class="mt-3 flex items-start gap-2 rounded-xl bg-wa-green/5 border border-wa-green/20 p-3">
+              <i data-lucide="info" class="h-4 w-4 text-wa-green shrink-0 mt-0.5"></i>
+              <p class="text-xs text-gray-600 dark:text-gray-300">Messages are sent automatically via WhatsApp Cloud API to every selected contact — no manual sending required.</p>
             </div>
           </div>
 
