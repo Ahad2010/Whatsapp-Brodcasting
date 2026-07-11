@@ -29,11 +29,11 @@ let groups = [
 ];
 
 let campaigns = [
-  { id: 1, name: "June Flash Sale",       date: "2026-07-08", group: "VIP Customers", recipients: 4,   delivered: 4,   read: 3,   failed: 0, status: "sent" },
-  { id: 2, name: "Welcome Series #1",     date: "2026-07-07", group: "New Leads",     recipients: 4,   delivered: 3,   read: 2,   failed: 1, status: "sent" },
-  { id: 3, name: "Weekly Newsletter",     date: "2026-07-05", group: "Newsletter",    recipients: 4,   delivered: 4,   read: 4,   failed: 0, status: "sent" },
-  { id: 4, name: "Eid Greetings",         date: "2026-07-12", group: "VIP Customers", recipients: 4,   delivered: 0,   read: 0,   failed: 0, status: "scheduled" },
-  { id: 5, name: "Cart Reminder",         date: "2026-07-04", group: "New Leads",     recipients: 4,   delivered: 2,   read: 1,   failed: 2, status: "failed" },
+  { id: 1, name: "June Flash Sale",       date: "2026-07-08", group: "VIP Customers", category: "Marketing",      recipients: 4,   delivered: 4,   read: 3,   failed: 0, cost: 0.12, status: "sent" },
+  { id: 2, name: "Welcome Series #1",     date: "2026-07-07", group: "New Leads",     category: "Utility",        recipients: 4,   delivered: 3,   read: 2,   failed: 1, cost: 0.03, status: "sent" },
+  { id: 3, name: "Weekly Newsletter",     date: "2026-07-05", group: "Newsletter",    category: "Marketing",      recipients: 4,   delivered: 4,   read: 4,   failed: 0, cost: 0.12, status: "sent" },
+  { id: 4, name: "Eid Greetings",         date: "2026-07-12", group: "VIP Customers", category: "Marketing",      recipients: 4,   delivered: 0,   read: 0,   failed: 0, cost: 0.12, status: "scheduled" },
+  { id: 5, name: "Cart Reminder",         date: "2026-07-04", group: "New Leads",     category: "Utility",        recipients: 4,   delivered: 2,   read: 1,   failed: 2, cost: 0.02, status: "failed" },
 ];
 
 let templates = [
@@ -56,8 +56,25 @@ const trendData = [
 
 let currentUser = { name: "Jane Cooper", email: "demo@wablast.io" };
 
+/* WhatsApp per-message pricing (USD). Editable in Settings → Pricing.
+   Real Meta rates vary by category + country; these are editable placeholders. */
+let pricing = {
+  currency: "USD",
+  symbol: "$",
+  rates: { Marketing: 0.030, Utility: 0.010, Authentication: 0.015, Service: 0.000 },
+};
+
+function messageCost(count, category) {
+  const rate = pricing.rates[category] ?? 0;
+  return count * rate;
+}
+function fmtMoney(amount) {
+  return pricing.symbol + Number(amount).toFixed(2);
+}
+
 /* Compose page working state */
 let composeSelectedGroups = new Set();
+let composeCategory = "Marketing";
 
 /* ------------------------------ Helpers ------------------------------ */
 
@@ -82,6 +99,18 @@ function groupMemberCount(g) {
 
 function escapeHtml(str = "") {
   return str.replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+}
+
+// Parse pasted phone numbers (one per line / comma / space separated).
+// Keeps digits only, requires >=10 digits (country code), de-duplicates.
+function parsePastedNumbers(text) {
+  const seen = new Set();
+  const out = [];
+  (text || "").split(/[\s,;]+/).forEach(tok => {
+    const digits = tok.replace(/\D/g, "");
+    if (digits.length >= 10 && !seen.has(digits)) { seen.add(digits); out.push(digits); }
+  });
+  return out;
 }
 
 /* ------------------------------ Toasts ------------------------------ */
@@ -860,8 +889,9 @@ function composeToGroup(id) {
    PAGE: COMPOSE (core feature)
    ======================================================================== */
 
-let composeMode = "groups"; // or "contacts"
+let composeMode = "groups"; // "groups" | "contacts" | "numbers"
 let composeSelectedContacts = new Set();
+let composePastedNumbers = [];
 let composeScheduled = false;
 
 function composeRecipientCount() {
@@ -876,6 +906,7 @@ function composeRecipientCount() {
     });
     return ids.size;
   }
+  if (composeMode === "numbers") return composePastedNumbers.length;
   return composeSelectedContacts.size;
 }
 
@@ -927,13 +958,21 @@ function renderCompose() {
           </div>
 
           <div class="card p-6">
-            <div class="flex items-center gap-2 mb-4">
+            <div class="flex flex-wrap items-center gap-2 mb-4">
               <button id="tab-groups" class="px-3 py-1.5 text-sm font-semibold rounded-lg ${composeMode==='groups' ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}" onclick="setComposeMode('groups')">Select Groups</button>
               <button id="tab-contacts" class="px-3 py-1.5 text-sm font-semibold rounded-lg ${composeMode==='contacts' ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}" onclick="setComposeMode('contacts')">Individual Contacts</button>
+              <button id="tab-numbers" class="px-3 py-1.5 text-sm font-semibold rounded-lg ${composeMode==='numbers' ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}" onclick="setComposeMode('numbers')">Paste Numbers</button>
             </div>
             <div id="recipient-groups" class="${composeMode==='groups' ? '' : 'hidden'} grid grid-cols-1 sm:grid-cols-2 gap-2">${groupChecklist}</div>
             <div id="recipient-contacts" class="${composeMode==='contacts' ? '' : 'hidden'}">
               <div class="border border-gray-100 dark:border-gray-800 rounded-xl max-h-64 overflow-y-auto p-1">${contactChecklist}</div>
+            </div>
+            <div id="recipient-numbers" class="${composeMode==='numbers' ? '' : 'hidden'}">
+              <textarea id="compose-numbers" rows="6" class="input-field resize-none font-mono text-sm" placeholder="Paste phone numbers with country code — one per line or comma-separated.&#10;923001234567&#10;923019876543&#10;923022223344"></textarea>
+              <div class="flex items-center justify-between mt-2">
+                <p class="text-xs text-gray-400 flex items-center gap-1"><i data-lucide="info" class="h-3.5 w-3.5"></i> No names or contacts needed — messages go straight to these numbers.</p>
+                <span class="text-xs whitespace-nowrap"><span id="numbers-valid" class="font-bold text-wa-green">0</span> valid numbers</span>
+              </div>
             </div>
           </div>
 
@@ -951,6 +990,22 @@ function renderCompose() {
             <div id="schedule-picker" class="${composeScheduled ? '' : 'hidden'} mt-3 grid grid-cols-2 gap-3">
               <input type="date" id="sched-date" class="input-field" value="2026-07-12">
               <input type="time" id="sched-time" class="input-field" value="10:00">
+            </div>
+
+            <div class="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-gray-50 dark:bg-gray-800/50 p-3">
+              <div class="flex items-center gap-2">
+                <label class="text-sm text-gray-500 dark:text-gray-400">Message type</label>
+                <select id="msg-category" class="input-field py-1.5 w-auto text-sm">
+                  <option value="Marketing">Marketing</option>
+                  <option value="Utility">Utility</option>
+                  <option value="Authentication">Authentication</option>
+                  <option value="Service">Service (free)</option>
+                </select>
+              </div>
+              <div class="text-sm text-gray-600 dark:text-gray-300">
+                Estimated cost: <span id="cost-estimate" class="font-bold text-gray-900 dark:text-white">${pricing.symbol}0.00</span>
+                <span id="cost-rate" class="text-xs text-gray-400 block sm:inline"></span>
+              </div>
             </div>
 
             <div class="flex items-center justify-between mt-5 pt-5 border-t border-gray-50 dark:border-gray-800">
@@ -1016,16 +1071,40 @@ function renderCompose() {
     updateRecipientCount();
   }));
 
+  const numbersBox = $("#compose-numbers");
+  numbersBox.addEventListener("input", e => {
+    composePastedNumbers = parsePastedNumbers(e.target.value);
+    const vc = $("#numbers-valid");
+    if (vc) vc.textContent = composePastedNumbers.length;
+    updateRecipientCount();
+  });
+
+  const catSel = $("#msg-category");
+  catSel.value = composeCategory;
+  catSel.addEventListener("change", e => { composeCategory = e.target.value; updateCostEstimate(); });
+
   updateRecipientCount();
   refreshIcons();
+}
+
+function updateCostEstimate() {
+  const count = composeRecipientCount();
+  const rate = pricing.rates[composeCategory] ?? 0;
+  const el = $("#cost-estimate");
+  if (el) el.textContent = fmtMoney(messageCost(count, composeCategory));
+  const rl = $("#cost-rate");
+  if (rl) rl.textContent = `${count} × ${pricing.symbol}${rate.toFixed(3)} (${composeCategory})`;
 }
 
 function setComposeMode(mode) {
   composeMode = mode;
   $("#recipient-groups").classList.toggle("hidden", mode !== "groups");
   $("#recipient-contacts").classList.toggle("hidden", mode !== "contacts");
-  $("#tab-groups").className = `px-3 py-1.5 text-sm font-semibold rounded-lg ${mode==='groups' ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}`;
-  $("#tab-contacts").className = `px-3 py-1.5 text-sm font-semibold rounded-lg ${mode==='contacts' ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}`;
+  $("#recipient-numbers").classList.toggle("hidden", mode !== "numbers");
+  const cls = m => `px-3 py-1.5 text-sm font-semibold rounded-lg ${mode===m ? 'bg-wa-green/10 text-wa-green' : 'text-gray-400'}`;
+  $("#tab-groups").className = cls("groups");
+  $("#tab-contacts").className = cls("contacts");
+  $("#tab-numbers").className = cls("numbers");
   updateRecipientCount();
 }
 
@@ -1044,6 +1123,7 @@ function setSchedule(scheduled) {
 function updateRecipientCount() {
   const el = $("#recipient-count");
   if (el) el.textContent = composeRecipientCount();
+  updateCostEstimate();
 }
 
 function confirmBroadcast() {
@@ -1063,7 +1143,11 @@ function confirmBroadcast() {
       </div>
       <h3 class="text-lg font-bold text-gray-900 dark:text-white">Confirm broadcast</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">This will send your message to <span class="font-semibold text-gray-900 dark:text-white">${count} people</span> ${when}. Are you sure?</p>
-      <div class="mt-4 rounded-xl bg-gray-50 dark:bg-gray-800 p-3 text-sm text-gray-600 dark:text-gray-300 max-h-24 overflow-y-auto">${escapeHtml(message).replace(/\n/g,"<br>")}</div>
+      <div class="mt-4 flex items-center justify-between rounded-xl bg-wa-green/5 border border-wa-green/20 p-3 text-sm">
+        <span class="text-gray-500 dark:text-gray-400">${composeCategory} · ${count} messages</span>
+        <span class="font-bold text-gray-900 dark:text-white">Est. cost ${fmtMoney(messageCost(count, composeCategory))}</span>
+      </div>
+      <div class="mt-3 rounded-xl bg-gray-50 dark:bg-gray-800 p-3 text-sm text-gray-600 dark:text-gray-300 max-h-24 overflow-y-auto">${escapeHtml(message).replace(/\n/g,"<br>")}</div>
       <div class="flex gap-3 mt-6">
         <button data-close class="btn-secondary flex-1 justify-center">Cancel</button>
         <button id="confirm-send" class="btn-primary flex-1 justify-center">${composeScheduled ? "Schedule" : "Send Now"}</button>
@@ -1075,11 +1159,12 @@ function confirmBroadcast() {
 
 async function runBroadcast(message, count) {
   const wasScheduled = composeScheduled;
+  const category = composeCategory;
   const schedDate = wasScheduled ? $("#sched-date").value : "2026-07-11";
   const schedTime = wasScheduled ? $("#sched-time").value : "";
   const groupName = composeMode === "groups"
     ? [...composeSelectedGroups].map(id => groups.find(g => g.id === id)?.name).filter(Boolean).join(", ")
-    : "Individual contacts";
+    : composeMode === "numbers" ? "Pasted numbers" : "Individual contacts";
 
   // Progress modal
   openModal(`
@@ -1095,7 +1180,7 @@ async function runBroadcast(message, count) {
     </div>`, "max-w-sm");
   refreshIcons();
 
-  const result = await sendBroadcast(message, [...composeSelectedGroups], (done) => {
+  const result = await sendBroadcast(message, [...composeSelectedGroups], [...composeSelectedContacts], [...composePastedNumbers], category, (done) => {
     const pct = Math.round((done / count) * 100);
     const bar = $("#prog-bar"), pc = $("#prog-count");
     if (bar) bar.style.width = pct + "%";
@@ -1104,15 +1189,21 @@ async function runBroadcast(message, count) {
 
   // Record campaign
   const id = Math.max(0, ...campaigns.map(c => c.id)) + 1;
+  const cost = wasScheduled
+    ? messageCost(count, category)                                   // estimated (not sent yet)
+    : (result.cost != null ? result.cost : messageCost(result.delivered, category));
+
   campaigns.unshift({
     id,
     name: message.slice(0, 24) + (message.length > 24 ? "…" : ""),
     date: schedDate,
     group: groupName || "Custom",
+    category,
     recipients: count,
     delivered: wasScheduled ? 0 : result.delivered,
     read: wasScheduled ? 0 : result.read,
     failed: wasScheduled ? 0 : result.failed,
+    cost,
     status: wasScheduled ? "scheduled" : "sent",
   });
 
@@ -1120,45 +1211,59 @@ async function runBroadcast(message, count) {
   // reset compose
   composeSelectedGroups.clear();
   composeSelectedContacts.clear();
+  composePastedNumbers = [];
   composeScheduled = false;
 
   if (wasScheduled) {
     toast(`Broadcast scheduled for ${count} contacts on ${schedDate}${schedTime ? " at " + schedTime : ""}.`);
   } else {
-    toast(`Message sent to ${result.delivered} of ${count} contacts.`);
+    toast(`Message sent to ${result.delivered} of ${count} contacts · via ${result.via}.`);
   }
   navigateTo("history");
 }
 
-/* ---- Mock send function — replace with real backend call later ---- */
-async function sendBroadcast(message, groupIds, onProgress, total) {
-  // TODO: Replace with a real backend endpoint once the Meta WhatsApp Cloud API is connected.
-  // Example real call:
-  // const res = await fetch('/api/send-broadcast', {
-  //   method: 'POST',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ message, groupIds }),
-  // });
-  // return res.json();
+/* ---- Send function: calls the FastAPI backend, falls back to a local mock ----
+   The backend runs in "simulate" mode without Meta credentials, so this works
+   end-to-end offline. When real Meta creds are added to backend/.env, the exact
+   same call automatically sends real WhatsApp messages — no frontend change. */
+const API_BASE = "http://localhost:8000";
 
-  console.log("sendBroadcast() → groups:", groupIds, "message:", message);
-
-  // Simulate a rate-limited queue sending one-by-one with delay + progress.
-  return new Promise(resolve => {
-    let done = 0, delivered = 0, failed = 0;
+async function sendBroadcast(message, groupIds, contactIds, phones, category, onProgress, total) {
+  // Visual progress animation (runs regardless of transport).
+  const animate = () => new Promise(res => {
+    let done = 0;
     const tick = () => {
       done++;
-      // ~4% simulated failure rate
-      if (Math.random() < 0.04) failed++; else delivered++;
       onProgress(done);
-      if (done < total) {
-        setTimeout(tick, Math.max(120, 900 / total));
-      } else {
-        resolve({ delivered, failed, read: Math.round(delivered * 0.75) });
-      }
+      if (done < total) setTimeout(tick, Math.max(80, 700 / total));
+      else res();
     };
-    setTimeout(tick, 200);
+    setTimeout(tick, 150);
   });
+
+  // Try the real backend; fall back to a local mock if it's unreachable.
+  const callBackend = fetch(`${API_BASE}/api/broadcast/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, group_ids: groupIds, contact_ids: contactIds, phones, category }),
+  }).then(r => (r.ok ? r.json() : null)).catch(() => null);
+
+  const [, backend] = await Promise.all([animate(), callBackend]);
+
+  if (backend) {
+    return {
+      delivered: backend.delivered,
+      failed: backend.failed,
+      read: Math.round(backend.delivered * 0.75),
+      cost: backend.cost,
+      via: backend.simulated ? "backend (simulate)" : "backend (live)",
+    };
+  }
+
+  // ---- Local fallback: backend offline or page opened directly as a file ----
+  let delivered = 0, failed = 0;
+  for (let i = 0; i < total; i++) (Math.random() < 0.04 ? failed++ : delivered++);
+  return { delivered, failed, read: Math.round(delivered * 0.75), via: "local mock" };
 }
 
 /* ========================================================================
@@ -1175,14 +1280,28 @@ function renderHistory() {
       <td class="py-3 px-4 text-sm text-center text-wa-green font-medium">${c.delivered}</td>
       <td class="py-3 px-4 text-sm text-center text-blue-500 font-medium hidden sm:table-cell">${c.read}</td>
       <td class="py-3 px-4 text-sm text-center text-red-500 font-medium">${c.failed}</td>
+      <td class="py-3 px-4 text-sm text-center font-medium text-gray-700 dark:text-gray-300">${fmtMoney(c.cost ?? messageCost(c.delivered, c.category || "Marketing"))}</td>
       <td class="py-3 px-4">${statusBadge(c.status)}</td>
     </tr>`).join("");
 
+  const totalSpend = campaigns
+    .filter(c => c.status === "sent")
+    .reduce((sum, c) => sum + (c.cost ?? messageCost(c.delivered, c.category || "Marketing")), 0);
+
   $("#page-content").innerHTML = `
     <div class="max-w-7xl mx-auto space-y-6">
-      <div>
-        <h2 class="text-xl font-bold text-gray-900 dark:text-white">Campaign History</h2>
-        <p class="text-gray-500 dark:text-gray-400 text-sm mt-0.5">${campaigns.length} campaigns · click a row for details.</p>
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 class="text-xl font-bold text-gray-900 dark:text-white">Campaign History</h2>
+          <p class="text-gray-500 dark:text-gray-400 text-sm mt-0.5">${campaigns.length} campaigns · click a row for details.</p>
+        </div>
+        <div class="card px-4 py-2.5 flex items-center gap-3">
+          <span class="h-9 w-9 rounded-lg bg-wa-green/10 text-wa-green flex items-center justify-center"><i data-lucide="wallet" class="h-4 w-4"></i></span>
+          <div>
+            <div class="text-xs text-gray-400">Total spend (sent)</div>
+            <div class="text-lg font-bold text-gray-900 dark:text-white">${fmtMoney(totalSpend)}</div>
+          </div>
+        </div>
       </div>
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
@@ -1196,6 +1315,7 @@ function renderHistory() {
                 <th class="py-2.5 px-4 font-medium text-center">Delivered</th>
                 <th class="py-2.5 px-4 font-medium text-center hidden sm:table-cell">Read</th>
                 <th class="py-2.5 px-4 font-medium text-center">Failed</th>
+                <th class="py-2.5 px-4 font-medium text-center">Cost</th>
                 <th class="py-2.5 px-4 font-medium">Status</th>
               </tr>
             </thead>
@@ -1239,7 +1359,11 @@ function viewCampaign(id) {
         <h3 class="text-lg font-bold text-gray-900 dark:text-white">${escapeHtml(c.name)}</h3>
         <button data-close class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="h-5 w-5"></i></button>
       </div>
-      <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">${c.group} · ${c.date} · ${statusBadge(c.status)}</p>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">${c.group} · ${c.date} · ${c.category || "Marketing"} · ${statusBadge(c.status)}</p>
+      <div class="flex items-center justify-between rounded-xl bg-wa-green/5 border border-wa-green/20 p-3 mb-5 text-sm">
+        <span class="text-gray-500 dark:text-gray-400">Campaign cost</span>
+        <span class="font-bold text-gray-900 dark:text-white">${fmtMoney(c.cost ?? messageCost(c.delivered, c.category || "Marketing"))}</span>
+      </div>
 
       <div class="grid grid-cols-3 gap-3 mb-5">
         <div class="rounded-xl bg-wa-green/5 p-3 text-center">
@@ -1417,6 +1541,23 @@ function renderSettings() {
         </div>
       </div>
 
+      <!-- Pricing -->
+      <div class="card p-6">
+        <h3 class="font-semibold text-gray-900 dark:text-white mb-1 flex items-center gap-2"><i data-lucide="dollar-sign" class="h-5 w-5"></i> Message Pricing (per message, ${pricing.currency})</h3>
+        <p class="text-xs text-gray-400 mb-4">Used for cost estimates on Compose &amp; History. Real Meta rates vary by category and country — adjust to match your account.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          ${Object.keys(pricing.rates).map(cat => `
+            <div>
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">${cat}</label>
+              <div class="relative">
+                <span class="absolute left-3 top-2.5 text-gray-400 text-sm">${pricing.symbol}</span>
+                <input type="number" step="0.001" min="0" id="price-${cat}" class="input-field pl-7" value="${pricing.rates[cat].toFixed(3)}">
+              </div>
+            </div>`).join("")}
+        </div>
+        <button class="btn-primary mt-4" onclick="savePricing()"><i data-lucide="check" class="h-4 w-4"></i> Save rates</button>
+      </div>
+
       <!-- Billing -->
       <div class="card p-6">
         <h3 class="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2"><i data-lucide="credit-card" class="h-5 w-5"></i> Billing &amp; Usage</h3>
@@ -1434,6 +1575,17 @@ function renderSettings() {
         </div>
       </div>
     </div>`;
+}
+
+function savePricing() {
+  Object.keys(pricing.rates).forEach(cat => {
+    const input = $(`#price-${cat}`);
+    if (input) {
+      const v = parseFloat(input.value);
+      if (!isNaN(v) && v >= 0) pricing.rates[cat] = v;
+    }
+  });
+  toast("Pricing rates updated.");
 }
 
 /* ========================================================================
@@ -1465,4 +1617,5 @@ window.viewCampaign = viewCampaign;
 window.openTemplateModal = openTemplateModal;
 window.deleteTemplate = deleteTemplate;
 window.useTemplate = useTemplate;
+window.savePricing = savePricing;
 window.toast = toast;
