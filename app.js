@@ -1300,6 +1300,7 @@ async function runBroadcast(message, count) {
     cost,
     status: wasScheduled ? "scheduled" : "sent",
   });
+  persist();
 
   closeModal();
   // reset compose
@@ -1553,6 +1554,7 @@ function openTemplateModal() {
     e.preventDefault();
     const id = Math.max(0, ...templates.map(t => t.id)) + 1;
     templates.push({ id, name: $("#tpl-name").value.trim(), category: $("#tpl-cat").value, body: $("#tpl-body").value.trim() });
+    persist();
     closeModal(); renderTemplates(); refreshIcons();
     toast("Template saved.");
   });
@@ -1560,6 +1562,7 @@ function openTemplateModal() {
 
 function deleteTemplate(id) {
   templates = templates.filter(t => t.id !== id);
+  persist();
   renderTemplates(); refreshIcons();
   toast("Template deleted.", "info");
 }
@@ -1608,6 +1611,10 @@ function renderSettings() {
           <button class="btn-secondary py-2" onclick="checkBackend(true)"><i data-lucide="refresh-cw" class="h-4 w-4"></i> Test connection</button>
         </div>
         <p class="text-xs text-gray-400 mt-3">Start the backend with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">uvicorn main:app --reload</code> inside the <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">backend/</code> folder. If it's offline, broadcasts fall back to a local mock automatically.</p>
+        <div class="mt-4 pt-4 border-t border-gray-50 dark:border-gray-800 flex items-center justify-between gap-3">
+          <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5"><i data-lucide="save" class="h-3.5 w-3.5 text-wa-green"></i> Your contacts, groups &amp; campaigns are saved in this browser and survive a refresh.</p>
+          <button class="btn-secondary py-2 text-xs shrink-0" onclick="resetData()"><i data-lucide="rotate-ccw" class="h-4 w-4"></i> Reset demo data</button>
+        </div>
       </div>
 
       <!-- Connection -->
@@ -1695,6 +1702,7 @@ function savePricing() {
       if (!isNaN(v) && v >= 0) pricing.rates[cat] = v;
     }
   });
+  persist();
   toast("Pricing rates updated.");
 }
 
@@ -1731,4 +1739,5 @@ window.deleteTemplate = deleteTemplate;
 window.useTemplate = useTemplate;
 window.savePricing = savePricing;
 window.checkBackend = checkBackend;
+window.resetData = resetData;
 window.toast = toast;
