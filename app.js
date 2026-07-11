@@ -96,9 +96,20 @@ function loadState() {
   } catch (e) { /* corrupt data — ignore and keep seed defaults */ }
 }
 
-function resetData() {
+async function resetData() {
+  if (dataSource === "api") { try { await api.post("/api/dev/reset"); } catch (e) {} }
   try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
   location.reload();
+}
+
+/* ---- Account (single-user auth). Stored separately from app data so
+   "Reset demo data" never deletes the login. Backend auth comes later. ---- */
+const ACCOUNT_KEY = "wablast_account";
+function getAccount() {
+  try { return JSON.parse(localStorage.getItem(ACCOUNT_KEY)); } catch (e) { return null; }
+}
+function saveAccount(acc) {
+  try { localStorage.setItem(ACCOUNT_KEY, JSON.stringify(acc)); } catch (e) {}
 }
 
 /* Compose page working state */
@@ -221,11 +232,20 @@ function setupAuth() {
 
     if (authMode === "signup") {
       const name = $("#auth-name").value.trim() || "New User";
+      saveAccount({ name, email, password: pass });
       currentUser = { name, email };
+      toast("Account created — you're all set!");
+      enterApp();
     } else {
-      currentUser = { name: "Jane Cooper", email };
+      // Sign in: only the account created via Sign up can log in.
+      const acc = getAccount();
+      if (!acc) { toast("No account yet. Please sign up first.", "error"); return; }
+      if (acc.email.toLowerCase() !== email.toLowerCase() || acc.password !== pass) {
+        toast("Incorrect email or password.", "error"); return;
+      }
+      currentUser = { name: acc.name, email: acc.email };
+      enterApp();
     }
-    enterApp();
   });
 
   $("#connect-wa-btn").addEventListener("click", () => {
@@ -233,15 +253,15 @@ function setupAuth() {
   });
 }
 
-function enterApp() {
+async function enterApp() {
   $("#auth-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
   $("#user-name").textContent = currentUser.name;
   $("#user-email-label").textContent = currentUser.email;
   $("#user-avatar").textContent = initials(currentUser.name);
+  await bootstrapData();   // load contacts/groups/campaigns/templates from DB (or local)
   navigateTo("dashboard");
   refreshIcons();
-  checkBackend();
   // Re-check periodically so the badge reflects the backend going up/down.
   if (backendInterval) clearInterval(backendInterval);
   backendInterval = setInterval(checkBackend, 15000);
@@ -274,6 +294,71 @@ async function checkBackend(announce = false) {
     label.textContent = "API offline · local mock";
     if (announce) toast(`Backend not reachable at ${API_BASE}. Using local mock. Start it with: uvicorn main:app --reload`, "error");
   }
+}
+
+/* =========================================================================
+   DATA LAYER — backend (SQLite) when online, localStorage when offline.
+   `dataSource` is decided once at login and drives every mutation.
+   ========================================================================= */
+let dataSource = "local"; // "api" | "local"
+const GROUP_PALETTE = ["#25D366", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
+
+const api = {
+  async get(path) {
+    const r = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  },
+  async post(path, body) {
+    const r = await fetch(`${API_BASE}${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+    return r.status === 204 ? null : r.json();
+  },
+  async del(path) {
+    const r = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  },
+};
+
+// Map backend shapes -> the shapes the render code already expects.
+const mapContact  = c => ({ id: c.id, name: c.name, phone: c.phone, status: c.status, added: (c.added || "").slice(0, 10), group: c.group || "Uncategorized" });
+const mapGroup    = g => ({ id: g.id, name: g.name, desc: g.description, memberIds: g.member_ids || [], color: GROUP_PALETTE[g.id % GROUP_PALETTE.length] });
+const mapCampaign = c => ({ id: c.id, name: c.name, date: c.date, group: c.group, category: c.category, recipients: c.recipients, delivered: c.delivered, read: c.read, failed: c.failed, cost: c.cost, status: c.status });
+const mapTemplate = t => ({ id: t.id, name: t.name, body: t.body, category: t.category });
+
+async function reloadContacts()  { contacts  = (await api.get("/api/contacts")).map(mapContact); }
+async function reloadGroups()    { groups    = (await api.get("/api/groups")).map(mapGroup); }
+async function reloadCampaigns() { campaigns = (await api.get("/api/broadcast/campaigns")).map(mapCampaign); }
+async function reloadTemplates() { templates = (await api.get("/api/templates")).map(mapTemplate); }
+
+// Load all data at login: backend if reachable, else localStorage.
+async function bootstrapData() {
+  await checkBackend();
+  if (backendOnline) {
+    try {
+      await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+      dataSource = "api";
+      return;
+    } catch (e) {
+      console.warn("Backend data load failed, falling back to local:", e);
+    }
+  }
+  dataSource = "local";
+  loadState();
+}
+
+// Run a mutation against the backend (with reloads) or locally (with persist).
+async function mutate(apiFn, localFn) {
+  if (dataSource === "api") {
+    try { await apiFn(); }
+    catch (e) { toast(`Backend error: ${e.message}`, "error"); return false; }
+  } else {
+    localFn();
+    persist();
+  }
+  return true;
 }
 
 function setupLogout() {
@@ -652,7 +737,7 @@ function openAddContactModal() {
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Group</label>
-          <select id="nc-group" class="input-field">${groups.map(g => `<option>${g.name}</option>`).join("")}</select>
+          <select id="nc-group" class="input-field">${groups.map(g => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join("")}</select>
         </div>
         <div class="flex gap-3 pt-2">
           <button type="button" data-close class="btn-secondary flex-1 justify-center">Cancel</button>
@@ -661,16 +746,22 @@ function openAddContactModal() {
       </form>
     </div>`);
 
-  $("#add-contact-form").addEventListener("submit", e => {
+  $("#add-contact-form").addEventListener("submit", async e => {
     e.preventDefault();
     const name = $("#nc-name").value.trim();
     const phone = $("#nc-phone").value.replace(/\D/g, "");
-    const groupName = $("#nc-group").value;
+    const gid = +$("#nc-group").value;
+    const groupName = groups.find(g => g.id === gid)?.name || "Uncategorized";
     if (!name || phone.length < 10) { toast("Please enter a valid name and phone number.", "error"); return; }
-    const id = Math.max(0, ...contacts.map(c => c.id)) + 1;
-    contacts.push({ id, name, phone, group: groupName, added: "2026-07-11", status: "active" });
-    const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
-    persist();
+    const ok = await mutate(
+      async () => { await api.post("/api/contacts", { name, phone, group_ids: gid ? [gid] : [] }); await reloadContacts(); await reloadGroups(); },
+      () => {
+        const id = Math.max(0, ...contacts.map(c => c.id)) + 1;
+        contacts.push({ id, name, phone, group: groupName, added: TODAY, status: "active" });
+        const g = groups.find(g => g.id === gid); if (g) g.memberIds.push(id);
+      }
+    );
+    if (!ok) return;
     closeModal();
     renderContacts(); refreshIcons();
     toast(`${escapeHtml(name)} added to ${groupName} — ready for broadcast.`);
@@ -691,20 +782,25 @@ function openAddToGroupModal() {
         <button id="atg-confirm" class="btn-primary flex-1 justify-center">Add to Group</button>
       </div>
     </div>`);
-  $("#atg-confirm").addEventListener("click", () => {
+  $("#atg-confirm").addEventListener("click", async () => {
     const gid = +$("#atg-group").value;
     const g = groups.find(g => g.id === gid);
-    let count = 0;
-    selectedContactIds.forEach(id => {
-      const c = contacts.find(c => c.id === id);
-      if (c) { c.group = g.name; }
-      if (g && !g.memberIds.includes(id)) { g.memberIds.push(id); count++; }
-    });
+    const ids = [...selectedContactIds];
+    const ok = await mutate(
+      async () => { await api.post(`/api/groups/${gid}/members`, ids); await reloadContacts(); await reloadGroups(); },
+      () => {
+        ids.forEach(id => {
+          const c = contacts.find(c => c.id === id);
+          if (c) c.group = g.name;
+          if (g && !g.memberIds.includes(id)) g.memberIds.push(id);
+        });
+      }
+    );
+    if (!ok) return;
     selectedContactIds.clear();
-    persist();
     closeModal();
     renderContacts(); refreshIcons();
-    toast(`${count} contacts added to ${g.name}.`);
+    toast(`${ids.length} contacts added to ${g.name}.`);
   });
 }
 
@@ -784,16 +880,28 @@ function showImportPreview(rows) {
     </div>`;
   refreshIcons();
   $("#import-step-2 [data-close]").addEventListener("click", closeModal);
-  $("#import-confirm").addEventListener("click", () => {
-    let nextId = Math.max(0, ...contacts.map(c => c.id));
-    rows.forEach(r => {
-      const phone = r.phone.replace(/\D/g, "");
-      const groupName = groups.find(g => g.name === r.group) ? r.group : "New Leads";
-      const id = ++nextId;
-      contacts.push({ id, name: r.name, phone, group: groupName, added: "2026-07-11", status: "active" });
-      const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
-    });
-    persist();
+  $("#import-confirm").addEventListener("click", async () => {
+    const ok = await mutate(
+      async () => {
+        const payload = rows.map(r => {
+          const g = groups.find(g => g.name === r.group);
+          return { name: r.name, phone: r.phone.replace(/\D/g, ""), group_ids: g ? [g.id] : [] };
+        });
+        await api.post("/api/contacts/bulk", payload);
+        await reloadContacts(); await reloadGroups();
+      },
+      () => {
+        let nextId = Math.max(0, ...contacts.map(c => c.id));
+        rows.forEach(r => {
+          const phone = r.phone.replace(/\D/g, "");
+          const groupName = groups.find(g => g.name === r.group) ? r.group : "New Leads";
+          const id = ++nextId;
+          contacts.push({ id, name: r.name, phone, group: groupName, added: TODAY, status: "active" });
+          const g = groups.find(g => g.name === groupName); if (g) g.memberIds.push(id);
+        });
+      }
+    );
+    if (!ok) return;
     closeModal();
     renderContacts(); refreshIcons();
     toast(`Imported ${rows.length} contacts — all ready for broadcast.`);
@@ -911,15 +1019,20 @@ function openCreateGroupModal() {
       </form>
     </div>`, "max-w-lg");
 
-  $("#create-group-form").addEventListener("submit", e => {
+  $("#create-group-form").addEventListener("submit", async e => {
     e.preventDefault();
     const name = $("#cg-name").value.trim();
     if (!name) return;
     const memberIds = $$(".cg-member:checked").map(cb => +cb.value);
-    const palette = ["#25D366","#3b82f6","#a855f7","#f59e0b","#ef4444","#14b8a6"];
-    const id = Math.max(0, ...groups.map(g => g.id)) + 1;
-    groups.push({ id, name, desc: $("#cg-desc").value.trim() || "Custom group", memberIds, color: palette[id % palette.length] });
-    persist();
+    const desc = $("#cg-desc").value.trim() || "Custom group";
+    const ok = await mutate(
+      async () => { await api.post("/api/groups", { name, description: desc, member_ids: memberIds }); await reloadGroups(); await reloadContacts(); },
+      () => {
+        const id = Math.max(0, ...groups.map(g => g.id)) + 1;
+        groups.push({ id, name, desc, memberIds, color: GROUP_PALETTE[id % GROUP_PALETTE.length] });
+      }
+    );
+    if (!ok) return;
     closeModal();
     renderGroups(); refreshIcons();
     toast(`Group "${escapeHtml(name)}" created with ${memberIds.length} members.`);
@@ -940,9 +1053,12 @@ function deleteGroup(id) {
         <button id="del-confirm" class="flex-1 justify-center inline-flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white font-semibold text-sm py-2.5 rounded-xl">Delete</button>
       </div>
     </div>`, "max-w-sm");
-  $("#del-confirm").addEventListener("click", () => {
-    groups = groups.filter(x => x.id !== id);
-    persist();
+  $("#del-confirm").addEventListener("click", async () => {
+    const ok = await mutate(
+      async () => { await api.del(`/api/groups/${id}`); await reloadGroups(); await reloadContacts(); },
+      () => { groups = groups.filter(x => x.id !== id); }
+    );
+    if (!ok) return;
     closeModal(); renderGroups(); refreshIcons();
     toast(`Group "${escapeHtml(g.name)}" deleted.`, "info");
   });
@@ -1279,28 +1395,32 @@ async function runBroadcast(message, count) {
     const bar = $("#prog-bar"), pc = $("#prog-count");
     if (bar) bar.style.width = pct + "%";
     if (pc) pc.textContent = done;
-  }, count);
+  }, count, !wasScheduled);
 
   // Record campaign
-  const id = Math.max(0, ...campaigns.map(c => c.id)) + 1;
-  const cost = wasScheduled
-    ? messageCost(count, category)                                   // estimated (not sent yet)
-    : (result.cost != null ? result.cost : messageCost(result.delivered, category));
-
-  campaigns.unshift({
-    id,
-    name: message.slice(0, 24) + (message.length > 24 ? "…" : ""),
-    date: schedDate,
-    group: groupName || "Custom",
-    category,
-    recipients: count,
-    delivered: wasScheduled ? 0 : result.delivered,
-    read: wasScheduled ? 0 : result.read,
-    failed: wasScheduled ? 0 : result.failed,
-    cost,
-    status: wasScheduled ? "scheduled" : "sent",
-  });
-  persist();
+  if (dataSource === "api" && !wasScheduled) {
+    // Backend already saved the campaign — pull the fresh list from the DB.
+    try { await reloadCampaigns(); } catch (e) { /* it's persisted in the DB regardless */ }
+  } else {
+    const id = Math.max(0, ...campaigns.map(c => c.id), 0) + 1;
+    const cost = wasScheduled
+      ? messageCost(count, category)                                 // estimated (not sent yet)
+      : (result.cost != null ? result.cost : messageCost(result.delivered, category));
+    campaigns.unshift({
+      id,
+      name: message.slice(0, 24) + (message.length > 24 ? "…" : ""),
+      date: schedDate,
+      group: groupName || "Custom",
+      category,
+      recipients: count,
+      delivered: wasScheduled ? 0 : result.delivered,
+      read: wasScheduled ? 0 : result.read,
+      failed: wasScheduled ? 0 : result.failed,
+      cost,
+      status: wasScheduled ? "scheduled" : "sent",
+    });
+    if (dataSource !== "api") persist();
+  }
 
   closeModal();
   // reset compose
@@ -1323,7 +1443,7 @@ async function runBroadcast(message, count) {
    same call automatically sends real WhatsApp messages — no frontend change. */
 const API_BASE = "http://localhost:8000";
 
-async function sendBroadcast(message, groupIds, contactIds, phones, category, onProgress, total) {
+async function sendBroadcast(message, groupIds, contactIds, phones, category, onProgress, total, doSend = true) {
   // Visual progress animation (runs regardless of transport).
   const animate = () => new Promise(res => {
     let done = 0;
@@ -1335,6 +1455,9 @@ async function sendBroadcast(message, groupIds, contactIds, phones, category, on
     };
     setTimeout(tick, 150);
   });
+
+  // Scheduled sends: don't hit the backend (no scheduler yet) — just animate.
+  if (!doSend) { await animate(); return { delivered: 0, failed: 0, read: 0, via: "scheduled" }; }
 
   // Try the real backend; fall back to a local mock if it's unreachable.
   const callBackend = fetch(`${API_BASE}/api/broadcast/send`, {
@@ -1550,19 +1673,27 @@ function openTemplateModal() {
         </div>
       </form>
     </div>`);
-  $("#tpl-form").addEventListener("submit", e => {
+  $("#tpl-form").addEventListener("submit", async e => {
     e.preventDefault();
-    const id = Math.max(0, ...templates.map(t => t.id)) + 1;
-    templates.push({ id, name: $("#tpl-name").value.trim(), category: $("#tpl-cat").value, body: $("#tpl-body").value.trim() });
-    persist();
+    const name = $("#tpl-name").value.trim();
+    const category = $("#tpl-cat").value;
+    const body = $("#tpl-body").value.trim();
+    const ok = await mutate(
+      async () => { await api.post("/api/templates", { name, body, category }); await reloadTemplates(); },
+      () => { const id = Math.max(0, ...templates.map(t => t.id)) + 1; templates.push({ id, name, category, body }); }
+    );
+    if (!ok) return;
     closeModal(); renderTemplates(); refreshIcons();
     toast("Template saved.");
   });
 }
 
-function deleteTemplate(id) {
-  templates = templates.filter(t => t.id !== id);
-  persist();
+async function deleteTemplate(id) {
+  const ok = await mutate(
+    async () => { await api.del(`/api/templates/${id}`); await reloadTemplates(); },
+    () => { templates = templates.filter(t => t.id !== id); }
+  );
+  if (!ok) return;
   renderTemplates(); refreshIcons();
   toast("Template deleted.", "info");
 }
@@ -1612,7 +1743,7 @@ function renderSettings() {
         </div>
         <p class="text-xs text-gray-400 mt-3">Start the backend with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">uvicorn main:app --reload</code> inside the <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">backend/</code> folder. If it's offline, broadcasts fall back to a local mock automatically.</p>
         <div class="mt-4 pt-4 border-t border-gray-50 dark:border-gray-800 flex items-center justify-between gap-3">
-          <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5"><i data-lucide="save" class="h-3.5 w-3.5 text-wa-green"></i> Your contacts, groups &amp; campaigns are saved in this browser and survive a refresh.</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5"><i data-lucide="save" class="h-3.5 w-3.5 text-wa-green"></i> Data is stored in ${dataSource === "api" ? "the connected database" : "this browser"} and survives a refresh.</p>
           <button class="btn-secondary py-2 text-xs shrink-0" onclick="resetData()"><i data-lucide="rotate-ccw" class="h-4 w-4"></i> Reset demo data</button>
         </div>
       </div>
@@ -1711,7 +1842,6 @@ function savePricing() {
    ======================================================================== */
 
 document.addEventListener("DOMContentLoaded", () => {
-  loadState();
   setupAuth();
   setupLogout();
   setupNav();
