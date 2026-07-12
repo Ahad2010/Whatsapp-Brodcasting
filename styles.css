@@ -81,13 +81,6 @@
 }
 .dark .nav-link.active { color: #25D366; }
 
-/* ===== Footer links ===== */
-.footer-link {
-  color: #9ca3af;
-  transition: color .15s;
-}
-.footer-link:hover { color: #25D366; }
-
 /* ===== Cards ===== */
 .card {
   background: #fff;

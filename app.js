@@ -1241,8 +1241,8 @@ function showImportPreview(rows) {
     </tr>`).join("");
   step2.innerHTML = `
     <div class="flex items-center gap-2 mb-3 text-sm text-wa-green"><i data-lucide="check-circle" class="h-4 w-4"></i> ${rows.length} valid contacts found</div>
-    <div class="border border-gray-100 dark:border-gray-800 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
-      <table class="w-full text-left text-sm">
+    <div class="border border-gray-100 dark:border-gray-800 rounded-xl overflow-x-auto max-h-64 overflow-y-auto">
+      <table class="w-full text-left text-sm min-w-[20rem]">
         <thead class="bg-gray-50 dark:bg-gray-800/50 text-xs uppercase text-gray-400 sticky top-0">
           <tr><th class="py-2 px-3">Name</th><th class="py-2 px-3">Phone</th><th class="py-2 px-3">Group</th></tr>
         </thead>
