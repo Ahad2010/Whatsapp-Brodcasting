@@ -234,8 +234,10 @@ function setupAuth() {
     if (!passValid) ok = false;
     if (!ok) return;
 
-    const submitBtn = form.querySelector('[type="submit"]');
-    if (submitBtn) submitBtn.disabled = true;
+    // Show a spinner on the button and keep it visible for ~2.5s so signing in
+    // always feels deliberate (not an instant flash).
+    const startedAt = Date.now();
+    setAuthLoading(true);
     try {
       const online = await isBackendReachable();
 
@@ -253,6 +255,7 @@ function setupAuth() {
           currentUser = { name, email };
           toast("Account created locally (backend offline).", "info");
         }
+        await holdFor(startedAt, 2500);
         await enterApp();
       } else {
         // Sign in — only an account that exists in the database can log in.
@@ -260,6 +263,7 @@ function setupAuth() {
           const user = await api.post("/api/auth/login", { email, password: pass });
           authToken = user.access_token || "";
           currentUser = { name: user.name, email: user.email };
+          await holdFor(startedAt, 2500);
           await enterApp();
         } else {
           const acc = getAccount();
@@ -268,19 +272,44 @@ function setupAuth() {
             toast("Incorrect email or password.", "error"); return;
           }
           currentUser = { name: acc.name, email: acc.email };
+          await holdFor(startedAt, 2500);
           await enterApp();
         }
       }
     } catch (err) {
       toast(cleanAuthError(err.message), "error");
     } finally {
-      if (submitBtn) submitBtn.disabled = false;
+      setAuthLoading(false);
     }
   });
 
   $("#connect-wa-btn").addEventListener("click", () => {
     toast("WhatsApp Business connection is handled by the backend (Embedded Signup). This is a UI placeholder.", "info");
   });
+}
+
+// Toggle the loading spinner inside the Sign in / Create account button.
+function setAuthLoading(loading) {
+  const btn = $("#auth-submit-btn");
+  const spinner = $("#auth-spinner");
+  const arrow = $("#auth-submit-arrow");
+  const label = $("#auth-submit-label");
+  if (btn) btn.disabled = loading;
+  if (spinner) spinner.classList.toggle("hidden", !loading);
+  if (arrow) arrow.classList.toggle("hidden", loading);
+  if (label) {
+    label.textContent = loading
+      ? (authMode === "signup" ? "Creating account…" : "Signing in…")
+      : (authMode === "signup" ? "Create account" : "Sign in");
+  }
+  refreshIcons();
+}
+
+// Resolve only once at least `ms` has passed since `startedAt` (keeps a spinner
+// visible long enough that it doesn't flash on a fast response).
+function holdFor(startedAt, ms) {
+  const remaining = ms - (Date.now() - startedAt);
+  return remaining > 0 ? new Promise(r => setTimeout(r, remaining)) : Promise.resolve();
 }
 
 async function enterApp() {
@@ -658,26 +687,46 @@ const PAGE_TITLES = {
 };
 
 let currentPage = "dashboard";
+let navTimer = null;
+const NAV_SPINNER_MS = 350; // how long the loading spinner shows on each page change
 
-function navigateTo(page) {
+// A centered spinner shown briefly while a page loads.
+function pageSpinnerHTML() {
+  return `
+    <div class="flex items-center justify-center py-24 text-wa-green">
+      <i data-lucide="loader-2" class="h-8 w-8 animate-spin"></i>
+    </div>`;
+}
+
+// `afterRender` (optional) runs right after the real page is rendered — used by
+// callers (e.g. useTemplate) that need to touch the new page's DOM.
+function navigateTo(page, afterRender) {
   currentPage = page;
   $("#page-title").textContent = PAGE_TITLES[page] || "Dashboard";
   $$("#nav-links .nav-link").forEach(l => l.classList.toggle("active", l.dataset.page === page));
 
   const content = $("#page-content");
+  // Show a loading spinner immediately on every transition, then render.
   content.classList.remove("page-enter");
-  void content.offsetWidth; // reflow to restart animation
-  content.classList.add("page-enter");
+  content.innerHTML = pageSpinnerHTML();
+  refreshIcons();
+  closeSidebar();
 
   const renderers = {
     dashboard: renderDashboard, contacts: renderContacts, groups: renderGroups,
     compose: renderCompose, history: renderHistory, templates: renderTemplates, settings: renderSettings,
   };
-  (renderers[page] || renderDashboard)();
-  updateCreditsWidget();
-  refreshIcons();
-  closeSidebar();
-  content.scrollTo?.(0, 0);
+
+  clearTimeout(navTimer); // cancel a pending render if the user navigates again quickly
+  navTimer = setTimeout(() => {
+    void content.offsetWidth; // reflow to restart the enter animation
+    content.classList.add("page-enter");
+    (renderers[page] || renderDashboard)();
+    updateCreditsWidget();
+    refreshIcons();
+    content.scrollTo?.(0, 0);
+    if (typeof afterRender === "function") afterRender();
+  }, NAV_SPINNER_MS);
 }
 
 function setupNav() {
@@ -2053,15 +2102,14 @@ async function deleteTemplate(id) {
 
 function useTemplate(id) {
   const t = templates.find(t => t.id === id);
-  navigateTo("compose");
-  setTimeout(() => {
+  navigateTo("compose", () => {
     const msg = $("#compose-message");
     if (msg) {
       msg.value = t.body;
       msg.dispatchEvent(new Event("input"));
       toast(`Template "${t.name}" loaded into composer.`, "info");
     }
-  }, 60);
+  });
 }
 
 /* ========================================================================

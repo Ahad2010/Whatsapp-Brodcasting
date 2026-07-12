@@ -113,9 +113,10 @@
             <p class="text-xs text-red-500 mt-1 hidden" id="err-pass">Password must be at least 6 characters.</p>
           </div>
 
-          <button type="submit" class="btn-primary w-full justify-center">
+          <button type="submit" id="auth-submit-btn" class="btn-primary w-full justify-center">
+            <i id="auth-spinner" data-lucide="loader-2" class="h-4 w-4 animate-spin hidden"></i>
             <span id="auth-submit-label">Sign in</span>
-            <i data-lucide="arrow-right" class="h-4 w-4"></i>
+            <i id="auth-submit-arrow" data-lucide="arrow-right" class="h-4 w-4"></i>
           </button>
         </form>
 
