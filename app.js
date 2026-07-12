@@ -288,10 +288,15 @@ async function enterApp() {
   $("#user-avatar").textContent = initials(currentUser.name);
   await bootstrapData();   // load contacts/groups/campaigns/templates from DB (or local)
   navigateTo("dashboard");
+  setupAssistant();        // build the AI assistant widget (shown only when the backend is online)
   refreshIcons();
-  // Re-check periodically so the badge reflects the backend going up/down.
+  // Re-check periodically so the badge reflects the backend going up/down, and
+  // recover real data if we started offline and the backend later comes online.
   if (backendInterval) clearInterval(backendInterval);
-  backendInterval = setInterval(checkBackend, 15000);
+  backendInterval = setInterval(async () => {
+    await checkBackend();
+    await recoverBackendData();
+  }, 8000);
 }
 
 /* ---- Backend connection status ---- */
@@ -360,20 +365,45 @@ async function reloadGroups()    { groups    = (await api.get("/api/groups")).ma
 async function reloadCampaigns() { campaigns = (await api.get("/api/broadcast/campaigns")).map(mapCampaign); }
 async function reloadTemplates() { templates = (await api.get("/api/templates")).map(mapTemplate); }
 
-// Load all data at login: backend if reachable, else localStorage.
+// Load all data at login from the backend (MongoDB). The backend can be slow to
+// answer the first request (e.g. a hosted DB waking up), so retry a few times
+// before giving up — this prevents the brief flash of the "offline" empty state.
 async function bootstrapData() {
-  await checkBackend();
-  if (backendOnline) {
-    try {
-      await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
-      dataSource = "api";
-      return;
-    } catch (e) {
-      console.warn("Backend data load failed, falling back to local:", e);
+  // The old frontend-only build cached demo contacts/campaigns in localStorage.
+  // That stale cache is what used to reappear before the backend connected —
+  // drop it so real MongoDB data is the only source of truth.
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await checkBackend();
+    if (backendOnline) {
+      try {
+        await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+        dataSource = "api";
+        return;
+      } catch (e) {
+        console.warn("Backend data load failed, retrying:", e);
+      }
     }
+    await new Promise(r => setTimeout(r, 700)); // brief backoff before retry
   }
+
+  // Truly offline: show an empty app (NOT stale demo data). Real data loads
+  // automatically once the backend comes back (see the recovery check below).
   dataSource = "local";
-  loadState();
+  contacts = []; groups = []; campaigns = []; templates = [];
+}
+
+// If we started offline and the backend later comes online, pull real data and
+// refresh the view — no manual refresh needed.
+async function recoverBackendData() {
+  if (dataSource === "api" || !backendOnline) return;
+  try {
+    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+    dataSource = "api";
+    navigateTo(currentPage);
+    setupAssistant(); // enable the assistant now that the backend is reachable
+  } catch (e) { /* stay offline; try again on the next tick */ }
 }
 
 // Run a mutation against the backend (with reloads) or locally (with persist).
@@ -393,8 +423,179 @@ function setupLogout() {
     clearSession();   // end the saved session so refresh stays on the login page
     $("#app-shell").classList.add("hidden");
     $("#auth-screen").classList.remove("hidden");
+    closeAssistant();
     toast("You've been signed out.", "info");
   });
+}
+
+/* ========================================================================
+   AI ASSISTANT (Groq-powered) — chat that guides you and performs actions.
+   Broadcasts are only *prepared*; you confirm before anything is sent.
+   ======================================================================== */
+
+let assistantEnabled = false;
+let assistantOpen = false;
+let assistantBusy = false;
+let assistantHistory = [];        // raw OpenAI-format messages replayed to the backend
+let assistantDisplay = [];        // { role, text } shown in the panel
+let pendingBroadcast = null;      // draft awaiting user confirmation
+
+async function setupAssistant() {
+  const root = $("#assistant-root");
+  if (!root) return;
+  root.innerHTML = `
+    <button id="assistant-launcher" title="AI Assistant"
+      class="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full bg-wa-green text-white shadow-lg shadow-wa-green/30 flex items-center justify-center hover:scale-105 transition">
+      <i data-lucide="sparkles" class="h-6 w-6"></i>
+    </button>
+    <div id="assistant-panel" class="hidden fixed bottom-24 right-6 z-40 w-[22rem] max-w-[calc(100vw-2rem)] h-[32rem] max-h-[calc(100vh-8rem)] flex flex-col card overflow-hidden">
+      <div class="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800 bg-wa-green/5">
+        <div class="flex items-center gap-2">
+          <span class="h-8 w-8 rounded-lg bg-wa-green/15 text-wa-green flex items-center justify-center"><i data-lucide="sparkles" class="h-4 w-4"></i></span>
+          <div>
+            <p class="text-sm font-semibold text-gray-900 dark:text-white">AI Assistant</p>
+            <p class="text-[11px] text-gray-400">Ask me to add contacts, make groups, or draft a broadcast</p>
+          </div>
+        </div>
+        <button id="assistant-close" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="h-5 w-5"></i></button>
+      </div>
+      <div id="assistant-messages" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm"></div>
+      <div id="assistant-pending" class="px-4"></div>
+      <form id="assistant-form" class="p-3 border-t border-gray-100 dark:border-gray-800 flex items-end gap-2">
+        <textarea id="assistant-input" rows="1" placeholder="Type a message…"
+          class="input-field py-2 resize-none flex-1 max-h-24"></textarea>
+        <button type="submit" class="btn-primary px-3 py-2 shrink-0"><i data-lucide="send" class="h-4 w-4"></i></button>
+      </form>
+    </div>`;
+  refreshIcons();
+
+  $("#assistant-launcher").addEventListener("click", toggleAssistant);
+  $("#assistant-close").addEventListener("click", closeAssistant);
+  $("#assistant-form").addEventListener("submit", e => { e.preventDefault(); sendAssistantMessage(); });
+  const input = $("#assistant-input");
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 96) + "px"; });
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAssistantMessage(); }
+  });
+
+  // Only offer the assistant if the backend has it configured (Groq key set).
+  try {
+    const s = await api.get("/api/assistant/status");
+    assistantEnabled = !!s.enabled;
+  } catch { assistantEnabled = false; }
+  $("#assistant-launcher").classList.toggle("hidden", dataSource !== "api");
+
+  if (!assistantDisplay.length) {
+    assistantDisplay.push({
+      role: "assistant",
+      text: assistantEnabled
+        ? "Hi! I can add contacts, create groups & templates, and prepare broadcasts for you. Try: “Add Ahmed 923001234567 to VIP”."
+        : "The assistant isn't set up yet. Add a free Groq API key (GROQ_API_KEY) in backend/.env to enable me.",
+    });
+  }
+  renderAssistantMessages();
+}
+
+function toggleAssistant() { assistantOpen ? closeAssistant() : openAssistant(); }
+function openAssistant() {
+  assistantOpen = true;
+  $("#assistant-panel")?.classList.remove("hidden");
+  refreshIcons();
+  $("#assistant-input")?.focus();
+}
+function closeAssistant() {
+  assistantOpen = false;
+  $("#assistant-panel")?.classList.add("hidden");
+}
+
+function renderAssistantMessages() {
+  const box = $("#assistant-messages");
+  if (!box) return;
+  box.innerHTML = assistantDisplay.map(m => m.role === "user"
+    ? `<div class="flex justify-end"><div class="bg-wa-green text-white rounded-2xl rounded-br-sm px-3 py-2 max-w-[85%] whitespace-pre-wrap">${escapeHtml(m.text)}</div></div>`
+    : `<div class="flex justify-start"><div class="bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-2xl rounded-bl-sm px-3 py-2 max-w-[85%] whitespace-pre-wrap">${escapeHtml(m.text)}</div></div>`
+  ).join("") + (assistantBusy
+    ? `<div class="flex justify-start"><div class="bg-gray-100 dark:bg-gray-800 rounded-2xl rounded-bl-sm px-3 py-2 text-gray-400">…thinking</div></div>`
+    : "");
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderPendingBroadcast() {
+  const box = $("#assistant-pending");
+  if (!box) return;
+  if (!pendingBroadcast) { box.innerHTML = ""; return; }
+  const p = pendingBroadcast;
+  box.innerHTML = `
+    <div class="rounded-xl border border-wa-green/40 bg-wa-green/5 p-3 mb-2 text-sm">
+      <p class="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5"><i data-lucide="send" class="h-4 w-4 text-wa-green"></i> Confirm broadcast</p>
+      <p class="text-gray-600 dark:text-gray-300 mt-1">To <b>${escapeHtml(String(p.recipient_count))}</b> recipient(s) · ${escapeHtml(p.target || "")}</p>
+      <p class="text-gray-500 mt-1 italic line-clamp-3">“${escapeHtml(p.message)}”</p>
+      <div class="flex gap-2 mt-2">
+        <button id="pb-cancel" class="btn-secondary flex-1 justify-center py-1.5 text-xs">Cancel</button>
+        <button id="pb-send" class="btn-primary flex-1 justify-center py-1.5 text-xs">Send now</button>
+      </div>
+    </div>`;
+  refreshIcons();
+  $("#pb-cancel").addEventListener("click", () => { pendingBroadcast = null; renderPendingBroadcast(); });
+  $("#pb-send").addEventListener("click", confirmPendingBroadcast);
+}
+
+async function confirmPendingBroadcast() {
+  if (!pendingBroadcast) return;
+  const p = pendingBroadcast;
+  const btn = $("#pb-send");
+  if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
+  try {
+    const res = await api.post("/api/broadcast/send", {
+      message: p.message, group_ids: p.group_ids || [], phones: p.phones || [], category: p.category || "Marketing",
+    });
+    toast(`Broadcast sent — ${res.delivered} delivered, ${res.failed} failed.`, res.delivered ? "success" : "error");
+    pendingBroadcast = null;
+    renderPendingBroadcast();
+    assistantDisplay.push({ role: "assistant", text: `✅ Sent to ${res.delivered} recipient(s). You can see it in History.` });
+    renderAssistantMessages();
+    await refreshAfterAssistant();
+  } catch (e) {
+    toast(`Could not send: ${e.message}`, "error");
+    if (btn) { btn.disabled = false; btn.textContent = "Send now"; }
+  }
+}
+
+// Re-pull data from the backend and re-render the current page after the
+// assistant changes something (added a contact, created a group, sent a broadcast).
+async function refreshAfterAssistant() {
+  if (dataSource !== "api") return;
+  try {
+    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+    navigateTo(currentPage);
+  } catch (e) { /* leave the view as-is if a reload fails */ }
+}
+
+async function sendAssistantMessage() {
+  const input = $("#assistant-input");
+  const text = (input?.value || "").trim();
+  if (!text || assistantBusy) return;
+  if (!assistantEnabled) {
+    toast("Add a Groq API key (GROQ_API_KEY) in backend/.env to enable the assistant.", "error");
+    return;
+  }
+  input.value = ""; input.style.height = "auto";
+  assistantDisplay.push({ role: "user", text });
+  assistantBusy = true;
+  renderAssistantMessages();
+  try {
+    const res = await api.post("/api/assistant/chat", { message: text, history: assistantHistory });
+    assistantHistory = res.history || assistantHistory;
+    assistantDisplay.push({ role: "assistant", text: res.reply || "Done." });
+    pendingBroadcast = res.pending_broadcast || null;
+    await refreshAfterAssistant();
+  } catch (e) {
+    assistantDisplay.push({ role: "assistant", text: `⚠️ ${cleanAuthError(e.message)}` });
+  } finally {
+    assistantBusy = false;
+    renderAssistantMessages();
+    renderPendingBroadcast();
+  }
 }
 
 /* ========================================================================
@@ -406,7 +607,10 @@ const PAGE_TITLES = {
   compose: "Compose", history: "History", templates: "Templates", settings: "Settings",
 };
 
+let currentPage = "dashboard";
+
 function navigateTo(page) {
+  currentPage = page;
   $("#page-title").textContent = PAGE_TITLES[page] || "Dashboard";
   $$("#nav-links .nav-link").forEach(l => l.classList.toggle("active", l.dataset.page === page));
 
