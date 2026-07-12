@@ -16,6 +16,7 @@ let campaigns = [];
 let templates = [];
 
 let currentUser = { name: "", email: "" };
+let authToken = "";  // JWT from login/signup, attached as a Bearer token on every API call
 
 /* WhatsApp per-message pricing (USD). Editable in Settings → Pricing.
    Real Meta rates vary by category + country; these are editable placeholders. */
@@ -81,7 +82,8 @@ const SESSION_TTL = 24 * 60 * 60 * 1000; // 1 day in ms
 
 function saveSession(user) {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify({ ...user, ts: Date.now() }));
+    // Persist the JWT alongside the user so a page refresh stays authenticated.
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ ...user, token: authToken, ts: Date.now() }));
   } catch (e) {}
 }
 // Returns the saved user if the session is still valid, else null (and clears it).
@@ -90,7 +92,7 @@ function getSession() {
     const s = JSON.parse(localStorage.getItem(SESSION_KEY));
     if (!s || !s.ts) return null;
     if (Date.now() - s.ts > SESSION_TTL) { clearSession(); return null; }
-    return { name: s.name, email: s.email };
+    return { name: s.name, email: s.email, token: s.token || "" };
   } catch (e) { return null; }
 }
 function clearSession() {
@@ -242,6 +244,7 @@ function setupAuth() {
         if (online) {
           // Save the account in MongoDB via the backend.
           const user = await api.post("/api/auth/signup", { name, email, password: pass });
+          authToken = user.access_token || "";
           currentUser = { name: user.name, email: user.email };
           toast("Account created — saved to the database!");
         } else {
@@ -255,6 +258,7 @@ function setupAuth() {
         // Sign in — only an account that exists in the database can log in.
         if (online) {
           const user = await api.post("/api/auth/login", { email, password: pass });
+          authToken = user.access_token || "";
           currentUser = { name: user.name, email: user.email };
           await enterApp();
         } else {
@@ -335,28 +339,49 @@ async function checkBackend(announce = false) {
 let dataSource = "local"; // "api" | "local"
 const GROUP_PALETTE = ["#25D366", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
 
+// Build request headers, attaching the JWT as a Bearer token when we have one.
+function authHeaders(extra) {
+  const h = { ...(extra || {}) };
+  if (authToken) h["Authorization"] = `Bearer ${authToken}`;
+  return h;
+}
+
+// A 401 on a protected route means the token is missing/expired — bounce to login.
+// (Auth endpoints themselves return 401 for wrong passwords; those are handled inline.)
+function handleUnauthorized(path, status) {
+  if (status === 401 && !path.startsWith("/api/auth/")) {
+    forceLogout("Your session expired. Please sign in again.");
+    return true;
+  }
+  return false;
+}
+
 const api = {
   async get(path) {
-    const r = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+    const r = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers: authHeaders() });
+    if (handleUnauthorized(path, r.status)) throw new Error("Unauthorized");
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
     return r.json();
   },
   async post(path, body) {
     const r = await fetch(`${API_BASE}${path}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body),
     });
+    if (handleUnauthorized(path, r.status)) throw new Error("Unauthorized");
     if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
     return r.status === 204 ? null : r.json();
   },
   async put(path, body) {
     const r = await fetch(`${API_BASE}${path}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "PUT", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body),
     });
+    if (handleUnauthorized(path, r.status)) throw new Error("Unauthorized");
     if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
     return r.status === 204 ? null : r.json();
   },
   async del(path) {
-    const r = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+    const r = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers: authHeaders() });
+    if (handleUnauthorized(path, r.status)) throw new Error("Unauthorized");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
   },
 };
@@ -429,12 +454,21 @@ async function mutate(apiFn, localFn) {
   return true;
 }
 
+// Return to the login screen and forget the token/session. Shared by the
+// logout button and the automatic 401 handler.
+function forceLogout(message) {
+  clearSession();
+  authToken = "";
+  $("#app-shell").classList.add("hidden");
+  $("#auth-screen").classList.remove("hidden");
+  closeAssistant();
+  if (backendInterval) { clearInterval(backendInterval); backendInterval = null; }
+  if (message) toast(message, "error");
+}
+
 function setupLogout() {
   $("#logout-btn").addEventListener("click", () => {
-    clearSession();   // end the saved session so refresh stays on the login page
-    $("#app-shell").classList.add("hidden");
-    $("#auth-screen").classList.remove("hidden");
-    closeAssistant();
+    forceLogout();
     toast("You've been signed out.", "info");
   });
 }
@@ -2181,7 +2215,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // instead of bouncing back to the login screen.
   const session = getSession();
   if (session) {
-    currentUser = session;
+    authToken = session.token || "";
+    currentUser = { name: session.name, email: session.email };
     enterApp();
   }
 
