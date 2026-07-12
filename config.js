@@ -8,4 +8,4 @@
    • Do NOT put a trailing slash — it's stripped automatically anyway.
    • You can also set it later from the app: Settings → Backend API Connection.
    ========================================================================= */
-window.WABLAST_API_BASE = "";
+window.WABLAST_API_BASE = "https://web-production-1b8b0.up.railway.app/";

@@ -640,6 +640,7 @@ function navigateTo(page) {
     compose: renderCompose, history: renderHistory, templates: renderTemplates, settings: renderSettings,
   };
   (renderers[page] || renderDashboard)();
+  updateCreditsWidget();
   refreshIcons();
   closeSidebar();
   content.scrollTo?.(0, 0);
@@ -693,6 +694,24 @@ function statCard({ icon, label, value, sub, tint }) {
         </div>
       </div>
     </div>`;
+}
+
+// ----- Message credits widget (sidebar + Settings billing) -----
+// Credits reflect ONLY messages actually sent — one credit per recipient a
+// broadcast went out to, summed across every campaign. No mock numbers.
+const CREDIT_QUOTA = 10000;
+
+function messagesSentTotal() {
+  return campaigns.reduce((s, c) => s + (c.recipients || 0), 0);
+}
+
+// Refresh the sidebar "Message credits" widget from the real sent count.
+function updateCreditsWidget() {
+  const used = messagesSentTotal();
+  const label = $("#credits-label");
+  const bar = $("#credits-bar");
+  if (label) label.textContent = `${used.toLocaleString()} / ${CREDIT_QUOTA.toLocaleString()}`;
+  if (bar) bar.style.width = Math.min(100, (used / CREDIT_QUOTA) * 100) + "%";
 }
 
 // Build the last-7-days "messages sent" series from real campaigns.
@@ -2124,8 +2143,8 @@ function renderSettings() {
           <button class="btn-primary" onclick="toast('Upgrade flow is a UI placeholder.', 'info')">Upgrade</button>
         </div>
         <div class="rounded-xl bg-gray-50 dark:bg-gray-800 p-4">
-          <div class="flex justify-between text-sm mb-1"><span class="text-gray-500">Message credits used</span><span class="font-semibold">6,120 / 10,000</span></div>
-          <div class="h-2.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden"><div class="h-full bg-wa-green rounded-full" style="width:61%"></div></div>
+          <div class="flex justify-between text-sm mb-1"><span class="text-gray-500">Message credits used</span><span class="font-semibold">${messagesSentTotal().toLocaleString()} / ${CREDIT_QUOTA.toLocaleString()}</span></div>
+          <div class="h-2.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden"><div class="h-full bg-wa-green rounded-full" style="width:${Math.min(100, (messagesSentTotal() / CREDIT_QUOTA) * 100)}%"></div></div>
           <p class="text-xs text-gray-400 mt-2">Resets on 1 Aug 2026.</p>
         </div>
       </div>
