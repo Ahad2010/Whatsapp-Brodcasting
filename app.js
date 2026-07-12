@@ -7,54 +7,15 @@
 
 /* ------------------------------ Mock data ------------------------------ */
 
-let contacts = [
-  { id: 1,  name: "Ali Raza",        phone: "923001234567", group: "VIP Customers", added: "2026-05-02", status: "active" },
-  { id: 2,  name: "Sara Khan",       phone: "923019876543", group: "VIP Customers", added: "2026-05-04", status: "active" },
-  { id: 3,  name: "Bilal Ahmed",     phone: "923022223344", group: "New Leads",     added: "2026-05-11", status: "active" },
-  { id: 4,  name: "Ayesha Malik",    phone: "923033334455", group: "Newsletter",    added: "2026-05-15", status: "active" },
-  { id: 5,  name: "Usman Tariq",     phone: "923044445566", group: "New Leads",     added: "2026-05-19", status: "opted-out" },
-  { id: 6,  name: "Fatima Noor",     phone: "923055556677", group: "VIP Customers", added: "2026-05-22", status: "active" },
-  { id: 7,  name: "Hamza Sheikh",    phone: "923066667788", group: "Newsletter",    added: "2026-06-01", status: "active" },
-  { id: 8,  name: "Zainab Iqbal",    phone: "923077778899", group: "New Leads",     added: "2026-06-03", status: "active" },
-  { id: 9,  name: "Omar Farooq",     phone: "923088889900", group: "Newsletter",    added: "2026-06-08", status: "active" },
-  { id: 10, name: "Hina Aslam",      phone: "923099990011", group: "VIP Customers", added: "2026-06-12", status: "opted-out" },
-  { id: 11, name: "Kashif Mehmood",  phone: "923100011122", group: "New Leads",     added: "2026-06-18", status: "active" },
-  { id: 12, name: "Rabia Yousuf",    phone: "923111122233", group: "Newsletter",    added: "2026-06-25", status: "active" },
-];
+// All app data starts empty and is loaded from the backend (MongoDB) at login.
+// Only what the user actually creates (contacts they add) and real broadcasts
+// they send are ever stored — no demo/seed data.
+let contacts = [];
+let groups = [];
+let campaigns = [];
+let templates = [];
 
-let groups = [
-  { id: 1, name: "VIP Customers", desc: "High-value repeat buyers",        memberIds: [1, 2, 6, 10], color: "#25D366" },
-  { id: 2, name: "New Leads",     desc: "Prospects from the last 30 days", memberIds: [3, 5, 8, 11], color: "#3b82f6" },
-  { id: 3, name: "Newsletter",    desc: "Opted-in newsletter subscribers", memberIds: [4, 7, 9, 12], color: "#a855f7" },
-];
-
-let campaigns = [
-  { id: 1, name: "June Flash Sale",       date: "2026-07-08", group: "VIP Customers", category: "Marketing",      recipients: 4,   delivered: 4,   read: 3,   failed: 0, cost: 0.12, status: "sent" },
-  { id: 2, name: "Welcome Series #1",     date: "2026-07-07", group: "New Leads",     category: "Utility",        recipients: 4,   delivered: 3,   read: 2,   failed: 1, cost: 0.03, status: "sent" },
-  { id: 3, name: "Weekly Newsletter",     date: "2026-07-05", group: "Newsletter",    category: "Marketing",      recipients: 4,   delivered: 4,   read: 4,   failed: 0, cost: 0.12, status: "sent" },
-  { id: 4, name: "Eid Greetings",         date: "2026-07-12", group: "VIP Customers", category: "Marketing",      recipients: 4,   delivered: 0,   read: 0,   failed: 0, cost: 0.12, status: "scheduled" },
-  { id: 5, name: "Cart Reminder",         date: "2026-07-04", group: "New Leads",     category: "Utility",        recipients: 4,   delivered: 2,   read: 1,   failed: 2, cost: 0.02, status: "failed" },
-];
-
-let templates = [
-  { id: 1, name: "Flash Sale Alert",  body: "Hi {{name}}! Our flash sale is LIVE — up to 40% off for the next 24 hours only. Tap here to shop before it ends.", category: "Marketing" },
-  { id: 2, name: "Welcome Message",   body: "Welcome to the family, {{name}}! We're thrilled to have you. Reply MENU to see what we offer.", category: "Onboarding" },
-  { id: 3, name: "Order Confirmation",body: "Thanks {{name}}, your order #{{order}} is confirmed and being prepared. We'll notify you when it ships.", category: "Transactional" },
-  { id: 4, name: "Feedback Request",  body: "Hi {{name}}, how did we do? We'd love a quick 1-word reply: GREAT, OKAY, or POOR. It really helps us improve.", category: "Engagement" },
-];
-
-// 7-day trend (messages sent per day)
-const trendData = [
-  { day: "Mon", value: 320 },
-  { day: "Tue", value: 480 },
-  { day: "Wed", value: 410 },
-  { day: "Thu", value: 620 },
-  { day: "Fri", value: 780 },
-  { day: "Sat", value: 540 },
-  { day: "Sun", value: 690 },
-];
-
-let currentUser = { name: "Jane Cooper", email: "demo@wablast.io" };
+let currentUser = { name: "", email: "" };
 
 /* WhatsApp per-message pricing (USD). Editable in Settings → Pricing.
    Real Meta rates vary by category + country; these are editable placeholders. */
@@ -110,6 +71,30 @@ function getAccount() {
 }
 function saveAccount(acc) {
   try { localStorage.setItem(ACCOUNT_KEY, JSON.stringify(acc)); } catch (e) {}
+}
+
+/* ---- Session: keeps the user logged in across page refreshes.
+   Expires after SESSION_TTL (1 day) so a fresh login is only needed
+   once a day, not on every reload. ---- */
+const SESSION_KEY = "wablast_session";
+const SESSION_TTL = 24 * 60 * 60 * 1000; // 1 day in ms
+
+function saveSession(user) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ ...user, ts: Date.now() }));
+  } catch (e) {}
+}
+// Returns the saved user if the session is still valid, else null (and clears it).
+function getSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY));
+    if (!s || !s.ts) return null;
+    if (Date.now() - s.ts > SESSION_TTL) { clearSession(); return null; }
+    return { name: s.name, email: s.email };
+  } catch (e) { return null; }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
 }
 
 /* Compose page working state */
@@ -295,6 +280,7 @@ function setupAuth() {
 }
 
 async function enterApp() {
+  saveSession(currentUser);   // remember the login so a refresh doesn't kick back to the login page
   $("#auth-screen").classList.add("hidden");
   $("#app-shell").classList.remove("hidden");
   $("#user-name").textContent = currentUser.name;
@@ -404,6 +390,7 @@ async function mutate(apiFn, localFn) {
 
 function setupLogout() {
   $("#logout-btn").addEventListener("click", () => {
+    clearSession();   // end the saved session so refresh stays on the login page
     $("#app-shell").classList.add("hidden");
     $("#auth-screen").classList.remove("hidden");
     toast("You've been signed out.", "info");
@@ -488,8 +475,25 @@ function statCard({ icon, label, value, sub, tint }) {
     </div>`;
 }
 
+// Build the last-7-days "messages sent" series from real campaigns.
+function trendSeries() {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const value = campaigns
+      .filter(c => c.date === key)
+      .reduce((sum, c) => sum + (c.delivered || 0), 0);
+    out.push({ day: days[d.getDay()], value });
+  }
+  return out;
+}
+
 function trendChart() {
-  const max = Math.max(...trendData.map(d => d.value));
+  const trendData = trendSeries();
+  const max = Math.max(1, ...trendData.map(d => d.value)); // avoid divide-by-zero when empty
   const bars = trendData.map(d => {
     const h = Math.round((d.value / max) * 100);
     return `
@@ -516,16 +520,25 @@ function statusBadge(status) {
 
 function renderDashboard() {
   const totalContacts = contacts.length;
-  const sentToday = 690;
-  const deliveryRate = "97.4%";
 
-  const recentRows = campaigns.slice(0, 5).map(c => `
+  // Real stats derived from the campaigns the user has actually sent.
+  const today = new Date().toISOString().slice(0, 10);
+  const sentToday = campaigns
+    .filter(c => c.date === today)
+    .reduce((sum, c) => sum + (c.delivered || 0), 0);
+  const totalRecipients = campaigns.reduce((s, c) => s + (c.recipients || 0), 0);
+  const totalDelivered = campaigns.reduce((s, c) => s + (c.delivered || 0), 0);
+  const deliveryRate = totalRecipients ? ((totalDelivered / totalRecipients) * 100).toFixed(1) + "%" : "—";
+  const weekTotal = trendSeries().reduce((s, d) => s + d.value, 0);
+
+  const recentRows = campaigns.length ? campaigns.slice(0, 5).map(c => `
     <tr class="data-row border-t border-gray-50 dark:border-gray-800">
       <td class="py-3 px-4 font-medium text-gray-900 dark:text-white">${escapeHtml(c.name)}</td>
       <td class="py-3 px-4 text-sm text-gray-500 hidden sm:table-cell">${c.group}</td>
       <td class="py-3 px-4 text-sm text-gray-500 hidden md:table-cell">${c.date}</td>
       <td class="py-3 px-4">${statusBadge(c.status)}</td>
-    </tr>`).join("");
+    </tr>`).join("")
+    : `<tr><td colspan="4" class="py-12 text-center text-gray-400">No broadcasts yet. Send your first one to see it here.</td></tr>`;
 
   $("#page-content").innerHTML = `
     <div class="max-w-7xl mx-auto space-y-6">
@@ -540,10 +553,10 @@ function renderDashboard() {
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        ${statCard({ icon: "users",        label: "Total Contacts",     value: totalContacts,  sub: { up: true, text: "+12 this week" }, tint: "#25D366" })}
-        ${statCard({ icon: "users-round",  label: "Total Groups",       value: groups.length,  sub: { up: false, text: "3 active segments" }, tint: "#3b82f6" })}
-        ${statCard({ icon: "message-circle",label:"Messages Sent Today", value: sentToday,      sub: { up: true, text: "+18% vs yesterday" }, tint: "#a855f7" })}
-        ${statCard({ icon: "check-circle", label: "Delivery Rate",      value: deliveryRate,   sub: { up: true, text: "Above target" }, tint: "#f59e0b" })}
+        ${statCard({ icon: "users",        label: "Total Contacts",     value: totalContacts,  sub: { up: false, text: `${activeContacts().length} active` }, tint: "#25D366" })}
+        ${statCard({ icon: "users-round",  label: "Total Groups",       value: groups.length,  sub: { up: false, text: `${groups.length} segment${groups.length === 1 ? "" : "s"}` }, tint: "#3b82f6" })}
+        ${statCard({ icon: "message-circle",label:"Messages Sent Today", value: sentToday,      sub: { up: false, text: "Delivered today" }, tint: "#a855f7" })}
+        ${statCard({ icon: "check-circle", label: "Delivery Rate",      value: deliveryRate,   sub: { up: false, text: `${campaigns.length} campaign${campaigns.length === 1 ? "" : "s"}` }, tint: "#f59e0b" })}
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -553,7 +566,7 @@ function renderDashboard() {
               <h3 class="font-semibold text-gray-900 dark:text-white">Messages sent</h3>
               <p class="text-xs text-gray-400">Last 7 days</p>
             </div>
-            <span class="text-sm font-semibold text-wa-green">3,840 total</span>
+            <span class="text-sm font-semibold text-wa-green">${weekTotal.toLocaleString()} total</span>
           </div>
           ${trendChart()}
         </div>
@@ -610,7 +623,7 @@ function renderDashboard() {
 let contactFilter = { search: "", group: "all" };
 let selectedContactIds = new Set();
 
-const TODAY = "2026-07-11";
+const TODAY = new Date().toISOString().slice(0, 10);
 
 function contactStatusBadge(status) {
   return status === "active"
@@ -1888,6 +1901,15 @@ document.addEventListener("DOMContentLoaded", () => {
   setupNav();
   setupTheme();
   $("#backend-status").addEventListener("click", () => checkBackend(true));
+
+  // Restore a still-valid session so a refresh keeps you in the dashboard
+  // instead of bouncing back to the login screen.
+  const session = getSession();
+  if (session) {
+    currentUser = session;
+    enterApp();
+  }
+
   refreshIcons();
 });
 
