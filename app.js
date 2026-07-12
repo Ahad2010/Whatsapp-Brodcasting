@@ -348,6 +348,13 @@ const api = {
     if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
     return r.status === 204 ? null : r.json();
   },
+  async put(path, body) {
+    const r = await fetch(`${API_BASE}${path}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+    return r.status === 204 ? null : r.json();
+  },
   async del(path) {
     const r = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -364,6 +371,10 @@ async function reloadContacts()  { contacts  = (await api.get("/api/contacts")).
 async function reloadGroups()    { groups    = (await api.get("/api/groups")).map(mapGroup); }
 async function reloadCampaigns() { campaigns = (await api.get("/api/broadcast/campaigns")).map(mapCampaign); }
 async function reloadTemplates() { templates = (await api.get("/api/templates")).map(mapTemplate); }
+async function reloadSettings()  {
+  const s = await api.get("/api/settings");
+  if (s && s.rates) pricing = { currency: s.currency, symbol: s.symbol, rates: s.rates };
+}
 
 // Load all data at login from the backend (MongoDB). The backend can be slow to
 // answer the first request (e.g. a hosted DB waking up), so retry a few times
@@ -378,7 +389,7 @@ async function bootstrapData() {
     await checkBackend();
     if (backendOnline) {
       try {
-        await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+        await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates(), reloadSettings()]);
         dataSource = "api";
         return;
       } catch (e) {
@@ -399,7 +410,7 @@ async function bootstrapData() {
 async function recoverBackendData() {
   if (dataSource === "api" || !backendOnline) return;
   try {
-    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates(), reloadSettings()]);
     dataSource = "api";
     navigateTo(currentPage);
     setupAssistant(); // enable the assistant now that the backend is reachable
@@ -549,10 +560,15 @@ async function confirmPendingBroadcast() {
     const res = await api.post("/api/broadcast/send", {
       message: p.message, group_ids: p.group_ids || [], phones: p.phones || [], category: p.category || "Marketing",
     });
-    toast(`Broadcast sent — ${res.delivered} delivered, ${res.failed} failed.`, res.delivered ? "success" : "error");
     pendingBroadcast = null;
     renderPendingBroadcast();
-    assistantDisplay.push({ role: "assistant", text: `✅ Sent to ${res.delivered} recipient(s). You can see it in History.` });
+    if (res.delivered === 0 && res.error) {
+      toast(`Send failed: ${res.error}`, "error");
+      assistantDisplay.push({ role: "assistant", text: `⚠️ Couldn't send: ${res.error}` });
+    } else {
+      toast(`Broadcast sent — ${res.delivered} delivered, ${res.failed} failed.`, res.delivered ? "success" : "error");
+      assistantDisplay.push({ role: "assistant", text: `✅ Sent to ${res.delivered} recipient(s). You can see it in History.` });
+    }
     renderAssistantMessages();
     await refreshAfterAssistant();
   } catch (e) {
@@ -566,7 +582,7 @@ async function confirmPendingBroadcast() {
 async function refreshAfterAssistant() {
   if (dataSource !== "api") return;
   try {
-    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates()]);
+    await Promise.all([reloadContacts(), reloadGroups(), reloadCampaigns(), reloadTemplates(), reloadSettings()]);
     navigateTo(currentPage);
   } catch (e) { /* leave the view as-is if a reload fails */ }
 }
@@ -1689,8 +1705,12 @@ async function runBroadcast(message, count) {
 
   if (wasScheduled) {
     toast(`Broadcast scheduled for ${count} contacts on ${schedDate}${schedTime ? " at " + schedTime : ""}.`);
+  } else if (result.delivered === 0 && result.error) {
+    // Live send failed for every recipient — show Meta's real reason.
+    toast(`Send failed: ${result.error}`, "error");
   } else {
-    toast(`Message sent to ${result.delivered} of ${count} contacts · via ${result.via}.`);
+    toast(`Message sent to ${result.delivered} of ${count} contacts · via ${result.via}.`,
+          result.failed && !result.delivered ? "error" : "success");
   }
   navigateTo("history");
 }
@@ -1699,7 +1719,28 @@ async function runBroadcast(message, count) {
    The backend runs in "simulate" mode without Meta credentials, so this works
    end-to-end offline. When real Meta creds are added to backend/.env, the exact
    same call automatically sends real WhatsApp messages — no frontend change. */
-const API_BASE = "http://localhost:8000";
+/* Where the backend lives. Resolved once, in priority order:
+   1. URL saved from Settings → Backend API Connection (localStorage) — change it live, no redeploy.
+   2. window.WABLAST_API_BASE from config.js — set this when you deploy.
+   3. http://localhost:8000 — local development default. */
+const API_BASE = (() => {
+  const clean = u => (u || "").trim().replace(/\/+$/, ""); // strip trailing slash(es)
+  const saved = clean(localStorage.getItem("wablast_api_base"));
+  if (saved) return saved;
+  const configured = clean(typeof window !== "undefined" ? window.WABLAST_API_BASE : "");
+  if (configured) return configured;
+  return "http://localhost:8000";
+})();
+
+// Save/clear the backend URL from the Settings screen, then reload to apply it.
+function saveApiBase(url) {
+  const clean = (url || "").trim().replace(/\/+$/, "");
+  try {
+    if (clean) localStorage.setItem("wablast_api_base", clean);
+    else localStorage.removeItem("wablast_api_base");
+  } catch (e) {}
+  location.reload();
+}
 
 async function sendBroadcast(message, groupIds, contactIds, phones, category, onProgress, total, doSend = true) {
   // Visual progress animation (runs regardless of transport).
@@ -1732,6 +1773,7 @@ async function sendBroadcast(message, groupIds, contactIds, phones, category, on
       failed: backend.failed,
       read: Math.round(backend.delivered * 0.75),
       cost: backend.cost,
+      error: backend.error || null,
       via: backend.simulated ? "backend (simulate)" : "backend (live)",
     };
   }
@@ -1999,7 +2041,14 @@ function renderSettings() {
           </div>
           <button class="btn-secondary py-2" onclick="checkBackend(true)"><i data-lucide="refresh-cw" class="h-4 w-4"></i> Test connection</button>
         </div>
-        <p class="text-xs text-gray-400 mt-3">Start the backend with <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">uvicorn main:app --reload</code> inside the <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">backend/</code> folder. If it's offline, broadcasts fall back to a local mock automatically.</p>
+        <div class="mt-4">
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Backend URL</label>
+          <div class="flex flex-col sm:flex-row gap-2">
+            <input id="api-base-input" class="input-field py-2 flex-1 font-mono text-sm" placeholder="https://your-backend.up.railway.app" value="${escapeHtml(API_BASE)}">
+            <button class="btn-primary py-2 shrink-0" onclick="saveApiBase(document.getElementById('api-base-input').value)"><i data-lucide="save" class="h-4 w-4"></i> Save & reload</button>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">Paste your deployed (Railway) backend URL and press Save. Leave empty to use <code class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">http://localhost:8000</code> for local dev.</p>
+        </div>
         <div class="mt-4 pt-4 border-t border-gray-50 dark:border-gray-800 flex items-center justify-between gap-3">
           <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5"><i data-lucide="save" class="h-3.5 w-3.5 text-wa-green"></i> Data is stored in ${dataSource === "api" ? "the connected database" : "this browser"} and survives a refresh.</p>
           <button class="btn-secondary py-2 text-xs shrink-0" onclick="resetData()"><i data-lucide="rotate-ccw" class="h-4 w-4"></i> Reset demo data</button>
@@ -2083,7 +2132,7 @@ function renderSettings() {
     </div>`;
 }
 
-function savePricing() {
+async function savePricing() {
   Object.keys(pricing.rates).forEach(cat => {
     const input = $(`#price-${cat}`);
     if (input) {
@@ -2091,8 +2140,11 @@ function savePricing() {
       if (!isNaN(v) && v >= 0) pricing.rates[cat] = v;
     }
   });
-  persist();
-  toast("Pricing rates updated.");
+  const ok = await mutate(
+    async () => { await api.put("/api/settings", { rates: pricing.rates }); await reloadSettings(); },
+    () => persist(),
+  );
+  if (ok) toast("Pricing rates updated.");
 }
 
 /* ========================================================================
@@ -2136,5 +2188,6 @@ window.deleteTemplate = deleteTemplate;
 window.useTemplate = useTemplate;
 window.savePricing = savePricing;
 window.checkBackend = checkBackend;
+window.saveApiBase = saveApiBase;
 window.resetData = resetData;
 window.toast = toast;
