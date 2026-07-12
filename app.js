@@ -1861,9 +1861,11 @@ async function sendBroadcast(message, groupIds, contactIds, phones, category, on
   if (!doSend) { await animate(); return { delivered: 0, failed: 0, read: 0, via: "scheduled" }; }
 
   // Try the real backend; fall back to a local mock if it's unreachable.
+  // NOTE: must send the JWT — /api/broadcast/send is a protected route, so a
+  // missing token would 401 and silently drop into the local mock (nothing saved).
   const callBackend = fetch(`${API_BASE}/api/broadcast/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ message, group_ids: groupIds, contact_ids: contactIds, phones, category }),
   }).then(r => (r.ok ? r.json() : null)).catch(() => null);
 
